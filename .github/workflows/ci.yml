@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - run: uv run ruff check src tests scripts
+      - run: uv run ruff format --check src tests scripts
+      - run: uv run mypy
+      - run: uv run pytest --cov=projects_api --cov-report=term
+      - name: Build Lambda package (arm64)
+        run: scripts/build_lambda.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lambda-zip
+          path: build/lambda.zip
+          retention-days: 7
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.3.4"
+      - run: terraform fmt -check -recursive infra/terraform
+      - name: Validate bootstrap
+        working-directory: infra/terraform/bootstrap
+        run: terraform init -backend=false -input=false && terraform validate
+      - name: Validate dev
+        working-directory: infra/terraform/envs/dev
+        run: terraform init -backend=false -input=false && terraform validate
