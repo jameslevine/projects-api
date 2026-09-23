@@ -16,6 +16,8 @@ build/
 *.tfstate
 *.tfstate.*
 *.tfplan
+tfplan
+backend.hcl
 .terraform.lock.hcl
 crash.log
 *.auto.tfvars
@@ -28,3 +30,6 @@ crash.log
 .DS_Store
 .idea/
 .vscode/
+
+# Claude Code agent worktrees and local state
+.claude/

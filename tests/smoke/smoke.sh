@@ -20,7 +20,7 @@ code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 check "GET /health without key"          200 "$(code "${API_URL}/health")"
 check "POST /v1/projects without key"    403 "$(code -X POST "${API_URL}/v1/projects" -H 'content-type: application/json' -d '{"name":"x","type":"web"}')"
 check "POST /v1/projects create"         201 "$(code -X POST "${API_URL}/v1/projects" -H "x-api-key: ${API_KEY}" -H 'content-type: application/json' -d "{\"name\":\"${NAME}\",\"type\":\"web\"}")"
-check "POST /v1/projects duplicate"      409 "$(code -X POST "${API_URL}/v1/projects" -H "x-api-key: ${API_KEY}" -H 'content-type: application/json' -d "{\"name\":\"${NAME^^}\",\"type\":\"agent\"}")"
+check "POST /v1/projects duplicate"      409 "$(code -X POST "${API_URL}/v1/projects" -H "x-api-key: ${API_KEY}" -H 'content-type: application/json' -d "{\"name\":\"$(printf "%s" "${NAME}" | tr "[:lower:]" "[:upper:]")\",\"type\":\"agent\"}")"
 check "POST /v1/projects invalid name"   400 "$(code -X POST "${API_URL}/v1/projects" -H "x-api-key: ${API_KEY}" -H 'content-type: application/json' -d '{"name":"a/b","type":"web"}')"
 
 echo "${pass} passed, ${fail} failed"

@@ -40,7 +40,7 @@ Items: `PROJECT#<id>` / `META` (record) and `NAME#<nameKey>` / `RESERVATION` (un
 2. **Write `CLAUDE.md`** (repo conventions agents must follow): stack, commands (`make lint test tf-validate build`), layout, validation/error conventions, branch naming `ticket/<id>-<slug>`, commit style, PR body must contain `Closes #<n>`, never touch `main` directly, run `make lint test` before pushing, Terraform must pass `fmt -check` and `validate`, no AWS applies.
 3. **Git + GitHub**: rename branch to `main`, initial commit, `gh repo create jameslevine/projects-api --public --source=. --remote=origin --push`. Because the repo is public, double-check nothing sensitive is committed (no `.env`, no tfvars with emails, no state files; `.gitignore` already excludes these). Enable squash merge and auto-delete branches (`gh repo edit --enable-squash-merge --delete-branch-on-merge`).
 4. **Labels and milestones** via `gh label create` / `gh api repos/:owner/:repo/milestones`: labels `type:feature|infra|docs|test|chore`, `pillar:security|reliability|performance|cost|operations`, `slice:S0..S4`, `status:blocked`; milestones `S0 Foundation`, `S1 Create project`, `S2 Read projects`, `S3 Operate`, `S4 Lifecycle`.
-5. **Seed issues** with `scripts/seed_issues.sh`, which reads `docs/tickets/*.md` (one file per ticket: title line, labels/milestone metadata, body with description, acceptance criteria as Given/When/Then, dependencies, Definition of Done) and calls `gh issue create --title --body-file --label --milestone`. Idempotent: skips titles that already exist. Tickets already implemented in the initial commit are closed immediately with a comment `Implemented in <sha>`.
+5. **Seed issues** with `scripts/seed_issues.py`, which reads `docs/tickets/*.md` (one file per ticket: title line, labels/milestone metadata, body with description, acceptance criteria as Given/When/Then, dependencies, Definition of Done) and calls `gh issue create --title --body-file --label --milestone`. Idempotent: skips titles that already exist. Tickets already implemented in the initial commit are closed immediately with a comment `Implemented in <sha>`.
 6. **Board**: `docs/tickets/README.md` links to the milestones and explains the flow. Optionally a GitHub Project board (`gh project create`) with the milestone view; the `project` scope is available.
 
 ## Tickets
@@ -55,7 +55,7 @@ Ticket body template: Description, Acceptance criteria (Given/When/Then), Depend
 - S0-005 Lambda arm64 build script. *done, build pending*
 - S0-006 CI workflow (ruff, mypy, pytest, zip build, tf fmt/validate). *done, first run on push*
 - S0-007 `docs/architecture.md` with pillar mapping + ADR 0001 (REST API for API keys) + ADR 0004 (FastAPI/Mangum on Lambda). **agent**
-- S0-008 `CLAUDE.md` + `docs/tickets/README.md` + `scripts/seed_issues.sh`. *orchestrator*
+- S0-008 `CLAUDE.md` + `docs/tickets/README.md` + `scripts/seed_issues.py`. *orchestrator*
 
 **S1 Create project** (milestone `S1 Create project`). Usable output: key holder creates a project, gets 201 or 409.
 - S1-101 `dynamodb_table` module + least-privilege IAM. *done*
