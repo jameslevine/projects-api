@@ -29,6 +29,12 @@ variable "monthly_budget_usd" {
   default = 20
 }
 
+variable "api_p99_ms_threshold" {
+  description = "API Gateway Latency p99 (ms) above which the latency alarm fires."
+  type        = number
+  default     = 1500
+}
+
 variable "manage_account_cloudwatch_role" {
   type    = bool
   default = true

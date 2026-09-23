@@ -123,36 +123,96 @@ resource "aws_cloudwatch_metric_alarm" "api_4xx_ratio" {
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "ddb_system_errors" {
-  alarm_name          = "${var.name}-ddb-system-errors"
-  alarm_description   = "DynamoDB returned system errors"
-  namespace           = "AWS/DynamoDB"
-  metric_name         = "SystemErrors"
-  dimensions          = local.table_dims
-  statistic           = "Sum"
+resource "aws_cloudwatch_metric_alarm" "api_latency_p99" {
+  alarm_name          = "${var.name}-api-latency-p99"
+  alarm_description   = "API Gateway p99 latency is high"
+  namespace           = "AWS/ApiGateway"
+  metric_name         = "Latency"
+  dimensions          = local.api_dims
+  extended_statistic  = "p99"
   period              = 300
-  evaluation_periods  = 1
-  threshold           = 1
-  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 3
+  datapoints_to_alarm = 3
+  threshold           = var.api_p99_ms_threshold
+  comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
   tags                = var.tags
 }
 
-resource "aws_cloudwatch_metric_alarm" "ddb_throttled" {
-  alarm_name          = "${var.name}-ddb-throttled"
-  alarm_description   = "DynamoDB requests were throttled"
-  namespace           = "AWS/DynamoDB"
-  metric_name         = "ThrottledRequests"
-  dimensions          = local.table_dims
-  statistic           = "Sum"
-  period              = 300
+# AWS/DynamoDB SystemErrors has dimensions TableName + Operation only; there is no TableName-only
+# series, so an alarm on {TableName} never receives data. Sum one series per operation we issue.
+resource "aws_cloudwatch_metric_alarm" "ddb_system_errors" {
+  alarm_name          = "${var.name}-ddb-system-errors"
+  alarm_description   = "DynamoDB returned system errors (any operation)"
   evaluation_periods  = 1
   threshold           = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_actions
   tags                = var.tags
+
+  metric_query {
+    id          = "total"
+    expression  = "SUM([${join(", ", [for op in var.ddb_operations : "sys_${lower(op)}"])}])"
+    label       = "SystemErrors (all operations)"
+    return_data = true
+  }
+
+  dynamic "metric_query" {
+    for_each = toset(var.ddb_operations)
+    content {
+      id = "sys_${lower(metric_query.value)}"
+      metric {
+        namespace   = "AWS/DynamoDB"
+        metric_name = "SystemErrors"
+        dimensions  = merge(local.table_dims, { Operation = metric_query.value })
+        period      = 300
+        stat        = "Sum"
+      }
+    }
+  }
+}
+
+# ThrottledRequests is also per TableName + Operation. ReadThrottleEvents and WriteThrottleEvents
+# are the table-level throttle metrics, so alarm on their sum.
+resource "aws_cloudwatch_metric_alarm" "ddb_throttled" {
+  alarm_name          = "${var.name}-ddb-throttled"
+  alarm_description   = "DynamoDB read or write requests were throttled"
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+  tags                = var.tags
+
+  metric_query {
+    id          = "throttles"
+    expression  = "reads + writes"
+    label       = "Throttle events (read + write)"
+    return_data = true
+  }
+  metric_query {
+    id = "reads"
+    metric {
+      namespace   = "AWS/DynamoDB"
+      metric_name = "ReadThrottleEvents"
+      dimensions  = local.table_dims
+      period      = 300
+      stat        = "Sum"
+    }
+  }
+  metric_query {
+    id = "writes"
+    metric {
+      namespace   = "AWS/DynamoDB"
+      metric_name = "WriteThrottleEvents"
+      dimensions  = local.table_dims
+      period      = 300
+      stat        = "Sum"
+    }
+  }
 }
 
 resource "aws_cloudwatch_dashboard" "this" {
@@ -208,8 +268,9 @@ resource "aws_cloudwatch_dashboard" "this" {
           stat   = "Sum"
           period = 300
           metrics = [
-            ["ProjectsApi", "ProjectsCreated", "service", "projects-api"],
-            [".", "ColdStart", ".", "."],
+            [var.metrics_namespace, "ProjectsCreated", "service", var.service_name],
+            [".", "ProjectNameConflicts", ".", "."],
+            [".", "ColdStart", "function_name", var.lambda_function_name, "service", var.service_name],
           ]
         }
       },
@@ -223,8 +284,13 @@ resource "aws_cloudwatch_dashboard" "this" {
           metrics = [
             ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", var.table_name],
             [".", "ConsumedWriteCapacityUnits", ".", "."],
-            [".", "ThrottledRequests", ".", "."],
-            [".", "SystemErrors", ".", "."],
+            [".", "ReadThrottleEvents", ".", "."],
+            [".", "WriteThrottleEvents", ".", "."],
+            [{
+              expression = "SUM(SEARCH('{AWS/DynamoDB,TableName,Operation} MetricName=\"SystemErrors\" TableName=\"${var.table_name}\"', 'Sum', 60))"
+              label      = "SystemErrors (all operations)"
+              id         = "system_errors"
+            }],
           ]
         }
       },
