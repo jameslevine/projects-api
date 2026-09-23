@@ -320,8 +320,8 @@ The on-call runbook is [docs/runbook.md](docs/runbook.md) (deploy, rollback, API
 lifecycle, request tracing, alarm playbooks, PITR restore, cost review). In summary: the
 `observability` Terraform module creates a CloudWatch dashboard named `projects-api-<env>`
 (API count/4XX/5XX, latency p50/p99, Lambda invocations/errors/throttles, business metrics,
-DynamoDB capacity and errors), seven alarms (Lambda errors, throttles and p99 duration; API 5XX
-and 4XX ratio; DynamoDB system errors and throttles) fanning out to the SNS topic
+DynamoDB capacity and errors), eight alarms (Lambda errors, throttles and p99 duration; API 5XX,
+4XX ratio and p99 latency; DynamoDB system errors and throttle events) fanning out to the SNS topic
 `projects-api-<env>-alarms`, and a monthly cost budget; set `alarm_email` to subscribe.
 Lambda logs are in `/aws/lambda/projects-api-<env>` and gateway access logs in
 `/aws/apigateway/projects-api-<env>/access`, both 14-day retention.

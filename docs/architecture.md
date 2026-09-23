@@ -50,7 +50,7 @@ flowchart LR
     end
 
     subgraph obs["Observability module"]
-        alarms["7 CloudWatch alarms"]
+        alarms["8 CloudWatch alarms"]
         dash["CloudWatch dashboard"]
         budget["AWS Budget, monthly"]
         sns["SNS topic alarms, optional email"]
@@ -298,8 +298,9 @@ Implemented:
   requests per month) and a `reserved_concurrency` variable to cap the function
   ([`modules/api_gateway_rest/variables.tf`](../infra/terraform/modules/api_gateway_rest/variables.tf),
   [`modules/lambda_api/variables.tf`](../infra/terraform/modules/lambda_api/variables.tf)).
-- Alarms on Lambda errors and throttles, API 5XX, DynamoDB system errors and throttles, all
-  routed to SNS ([`modules/observability/main.tf`](../infra/terraform/modules/observability/main.tf)).
+- Alarms on Lambda errors, throttles and p99 duration; API 5XX, 4XX ratio and p99 latency;
+  DynamoDB system errors (summed across operations) and read/write throttle events, all routed
+  to SNS ([`modules/observability/main.tf`](../infra/terraform/modules/observability/main.tf)).
 - API deployment uses `create_before_destroy` and a content-hash trigger so stage updates do not
   leave a gap ([`modules/api_gateway_rest/main.tf`](../infra/terraform/modules/api_gateway_rest/main.tf)).
 - Remote state with S3 versioning and a DynamoDB lock table
@@ -337,7 +338,8 @@ Implemented:
   ([`scripts/build_lambda.sh`](../scripts/build_lambda.sh)).
 - Right-sizing knobs: `memory_mb` (default 512) and `timeout_seconds` (default 10) are module
   variables; the `ColdStart` metric, X-Ray active tracing on both the stage and the function,
-  and a p99 duration alarm (2000 ms over three periods) give the data to tune them
+  a Lambda p99 duration alarm (2000 ms over three periods) and an API p99 latency alarm
+  (1500 ms over three periods) give the data to tune them
   ([`modules/lambda_api/variables.tf`](../infra/terraform/modules/lambda_api/variables.tf),
   [`modules/observability/main.tf`](../infra/terraform/modules/observability/main.tf)).
 - Regional API endpoint (no CloudFront hop for a single-region, key-authenticated API)
@@ -401,13 +403,15 @@ Implemented:
   `terraform fmt -check` plus `terraform validate` for bootstrap and dev
   ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)).
 - Structured logging, tracing and metrics via Powertools: `inject_lambda_context`,
-  `capture_lambda_handler`, `log_metrics` with the cold-start metric, and the business metric
-  `ProjectsCreated` ([`main.py`](../src/projects_api/main.py),
+  `capture_lambda_handler`, `log_metrics` with the cold-start metric, and the business metrics
+  `ProjectsCreated` and `ProjectNameConflicts` ([`main.py`](../src/projects_api/main.py),
   [`observability.py`](../src/projects_api/observability.py),
-  [`api/routes/projects.py`](../src/projects_api/api/routes/projects.py)).
+  [`api/routes/projects.py`](../src/projects_api/api/routes/projects.py),
+  [`api/errors.py`](../src/projects_api/api/errors.py)).
 - A CloudWatch dashboard with API requests/errors, API latency p50/p99, Lambda invocations/
-  errors/throttles/concurrency, business metrics and DynamoDB capacity/errors; seven alarms with
-  an SNS topic ([`modules/observability/main.tf`](../infra/terraform/modules/observability/main.tf)).
+  errors/throttles/concurrency, business metrics (`ProjectsCreated`, `ProjectNameConflicts`,
+  `ColdStart`) and DynamoDB capacity/errors; eight alarms with an SNS topic
+  ([`modules/observability/main.tf`](../infra/terraform/modules/observability/main.tf)).
 - Request traceability: the API access log records `requestId` and `apiKeyId`; every problem
   response carries `requestId` and an `X-Request-Id` header
   ([`modules/api_gateway_rest/main.tf`](../infra/terraform/modules/api_gateway_rest/main.tf),
@@ -426,8 +430,6 @@ Gaps:
 - `requestId` today is the Lambda request id, not the API Gateway `requestContext.requestId`
   that the access log records; aligning them and logging one line per request is
   [S3-302](tickets/S3-302-correlation-ids.md).
-- The dashboard widget "projects created vs name conflicts" plots only `ProjectsCreated` and
-  `ColdStart`; the `ProjectNameConflicts` metric is [S3-301](tickets/S3-301-conflict-metric-alarm-review.md).
 - Smoke against a real stage: [S1-108](tickets/S1-108-smoke-deployed-stage.md). Rollback
   script: [S3-305](tickets/S3-305-rollback-script.md).
 

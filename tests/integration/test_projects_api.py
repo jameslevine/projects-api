@@ -309,6 +309,31 @@ def test_list_projects_requires_identity(client: TestClient) -> None:
     assert r.headers["content-type"].startswith("application/problem+json")
 
 
+# -- Metrics ------------------------------------------------------------------------
+
+
+def test_duplicate_name_adds_project_name_conflicts_metric(client: TestClient) -> None:
+    from projects_api.observability import metrics
+
+    client.post("/v1/projects", json={"name": "Counted", "type": "web"}, headers=HEADERS)
+    metrics.clear_metrics()
+    r = client.post("/v1/projects", json={"name": "counted", "type": "mcp"}, headers=BOB)
+    assert r.status_code == 409
+    metric_set = metrics.serialize_metric_set()
+    assert metric_set["ProjectNameConflicts"] == [1]  # EMF serialises values as arrays
+    metrics.clear_metrics()
+
+
+def test_successful_create_does_not_add_conflict_metric(client: TestClient) -> None:
+    from projects_api.observability import metrics
+
+    metrics.clear_metrics()
+    r = client.post("/v1/projects", json={"name": "No Conflict", "type": "web"}, headers=HEADERS)
+    assert r.status_code == 201
+    assert "ProjectNameConflicts" not in metrics.serialize_metric_set()
+    metrics.clear_metrics()
+
+
 # -- Lambda transport -------------------------------------------------------------
 
 
@@ -444,3 +469,50 @@ def test_lambda_handler_lists_projects_with_query_string_pagination(client: Test
     assert bad["statusCode"] == 400, bad
     assert json.loads(bad["body"])["title"] == "Invalid request"
     assert bad["headers"]["content-type"].startswith("application/problem+json")
+
+
+def _emf_blobs(stdout: str) -> list[dict[str, Any]]:
+    """Powertools prints one EMF JSON document per flush; Logger lines have no `_aws` key."""
+    blobs: list[dict[str, Any]] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            doc = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(doc, dict) and "_aws" in doc:
+            blobs.append(doc)
+    return blobs
+
+
+def test_lambda_handler_conflict_flushes_project_name_conflicts_metric(
+    client: TestClient, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from projects_api.main import handler
+    from projects_api.observability import metrics
+
+    first = handler(
+        _apigw_event("POST", "/v1/projects", {"name": "metric dupe", "type": "web"}, "k1"), _Ctx()
+    )
+    assert first["statusCode"] == 201, first
+    metrics.clear_metrics()
+    capsys.readouterr()  # drop everything flushed so far
+
+    resp = handler(
+        _apigw_event("POST", "/v1/projects", {"name": "METRIC DUPE", "type": "web"}, "k2"), _Ctx()
+    )
+    assert resp["statusCode"] == 409, resp
+
+    blobs = [b for b in _emf_blobs(capsys.readouterr().out) if "ProjectNameConflicts" in b]
+    assert len(blobs) == 1, blobs
+    blob = blobs[0]
+    assert blob["ProjectNameConflicts"] == [1]  # EMF serialises values as arrays
+    (metric_set,) = blob["_aws"]["CloudWatchMetrics"]
+    assert metric_set["Namespace"] == "ProjectsApi"
+    assert {"Name": "ProjectNameConflicts", "Unit": "Count"} in metric_set["Metrics"]
+    # The dashboard widget queries this metric by the `service` dimension alone; pin that.
+    assert metric_set["Dimensions"] == [["service"]]
+    assert blob["service"] == "projects-api"
+    assert "ProjectsCreated" not in blob
