@@ -17,7 +17,11 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from projects_api.config import Settings
-from projects_api.domain.exceptions import ProjectNameTakenError, ProjectNotFoundError
+from projects_api.domain.exceptions import (
+    InvalidCursorError,
+    ProjectNameTakenError,
+    ProjectNotFoundError,
+)
 from projects_api.domain.models import Project
 from projects_api.domain.validation import name_key
 
@@ -34,6 +38,10 @@ def name_pk(name: str) -> str:
 
 def owner_gsi1pk(owner_id: str) -> str:
     return f"OWNER#{owner_id}"
+
+
+GSI1_NAME = "GSI1"
+PROJECT_GSI1SK_PREFIX = "PROJECT#"
 
 
 class ProjectRepository:
@@ -67,7 +75,7 @@ class ProjectRepository:
             "createdAt": {"S": created_at},
             "updatedAt": {"S": project.updated_at.isoformat()},
             "GSI1PK": {"S": owner_gsi1pk(project.owner_id)},
-            "GSI1SK": {"S": f"PROJECT#{created_at}#{project.project_id}"},
+            "GSI1SK": {"S": f"{PROJECT_GSI1SK_PREFIX}{created_at}#{project.project_id}"},
         }
         reservation_item = {
             "PK": {"S": name_pk(project.name)},
@@ -120,6 +128,45 @@ class ProjectRepository:
         if not item:
             raise ProjectNotFoundError(project_id)
         return _to_project(item)
+
+    def list_by_owner(
+        self, owner_id: str, *, limit: int, cursor: dict[str, Any] | None = None
+    ) -> tuple[list[Project], dict[str, Any] | None]:
+        """Return one page of the owner's projects, newest first, from GSI1.
+
+        `cursor` is the raw `LastEvaluatedKey` from a previous page (already validated as
+        belonging to this owner). The returned cursor is None when DynamoDB reports no
+        further items; note DynamoDB may return a cursor for a page that turns out to be
+        the last one, in which case the next call returns an empty page and None.
+
+        The `begins_with` condition keeps future entity types that share the owner
+        partition out of the listing.
+        """
+        params: dict[str, Any] = {
+            "TableName": self._table,
+            "IndexName": GSI1_NAME,
+            "KeyConditionExpression": "GSI1PK = :pk AND begins_with(GSI1SK, :prefix)",
+            "ExpressionAttributeValues": {
+                ":pk": {"S": owner_gsi1pk(owner_id)},
+                ":prefix": {"S": PROJECT_GSI1SK_PREFIX},
+            },
+            "ScanIndexForward": False,
+            "Limit": limit,
+        }
+        if cursor is not None:
+            params["ExclusiveStartKey"] = cursor
+        try:
+            response = self._client.query(**params)
+        except ClientError as exc:
+            # A structurally valid token whose key DynamoDB still rejects (for example a
+            # key that does not match the key condition) is a bad cursor, not a bug.
+            code = exc.response.get("Error", {}).get("Code")
+            if cursor is not None and code == "ValidationException":
+                raise InvalidCursorError() from exc
+            raise
+        items = [_to_project(item) for item in response.get("Items", [])]
+        last_key: dict[str, Any] | None = response.get("LastEvaluatedKey")
+        return items, last_key
 
 
 def _to_project(item: dict[str, Any]) -> Project:

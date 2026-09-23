@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from projects_api.api import deps
+from projects_api.api.pagination import encode_cursor
 from projects_api.config import Settings, get_settings
 from projects_api.domain.models import Project, ProjectType
 from projects_api.repositories.projects import ProjectRepository
@@ -178,6 +179,136 @@ def test_get_project_requires_identity(client: TestClient) -> None:
     assert r.headers["content-type"].startswith("application/problem+json")
 
 
+# -- GET /v1/projects (list) ----------------------------------------------------------
+
+BOB = {"X-Api-Key-Id": "key-bob"}
+
+
+def _sort_key(item: dict[str, Any]) -> tuple[str, str]:
+    """Mirror GSI1SK ordering: createdAt then projectId."""
+    return (item["createdAt"], item["projectId"])
+
+
+def _assert_invalid_request(r: Any) -> dict[str, Any]:
+    assert r.status_code == 400, r.text
+    assert r.headers["content-type"].startswith("application/problem+json")
+    body: dict[str, Any] = r.json()
+    assert body["status"] == 400
+    assert body["title"] == "Invalid request"
+    return body
+
+
+def test_list_projects_paginates_newest_first_and_excludes_other_owners(
+    client: TestClient,
+) -> None:
+    mine = [_create(client, f"alice {i}", HEADERS) for i in range(3)]
+    other = _create(client, "bob only", BOB)
+
+    page1 = client.get("/v1/projects", params={"limit": 2}, headers=HEADERS)
+    assert page1.status_code == 200, page1.text
+    body1 = page1.json()
+    assert set(body1) == {"items", "nextToken"}
+    assert len(body1["items"]) == 2
+    assert isinstance(body1["nextToken"], str) and body1["nextToken"]
+    # newest first, by the same key GSI1SK sorts on
+    assert body1["items"] == sorted(body1["items"], key=_sort_key, reverse=True)
+
+    page2 = client.get(
+        "/v1/projects", params={"limit": 2, "nextToken": body1["nextToken"]}, headers=HEADERS
+    )
+    assert page2.status_code == 200, page2.text
+    body2 = page2.json()
+    assert len(body2["items"]) == 1
+    assert body2["nextToken"] is None
+
+    listed = body1["items"] + body2["items"]
+    assert listed == sorted(mine, key=_sort_key, reverse=True)
+    assert other["projectId"] not in {p["projectId"] for p in listed}
+    # items are full project records, identical to what create returned
+    assert {p["projectId"]: p for p in listed} == {p["projectId"]: p for p in mine}
+
+
+def test_list_projects_default_limit_returns_everything_with_null_token(
+    client: TestClient,
+) -> None:
+    mine = [_create(client, f"alice {i}", HEADERS) for i in range(3)]
+    r = client.get("/v1/projects", headers=HEADERS)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["items"]) == len(mine)
+    assert body["nextToken"] is None
+
+
+def test_list_projects_for_new_caller_is_empty(client: TestClient) -> None:
+    _create(client, "someone elses", BOB)
+    r = client.get("/v1/projects", headers={"X-Api-Key-Id": "key-new"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"items": [], "nextToken": None}
+
+
+@pytest.mark.parametrize("limit", ["0", "101", "-1", "abc", "1.5", ""])
+def test_list_projects_rejects_limit_out_of_range(client: TestClient, limit: str) -> None:
+    body = _assert_invalid_request(
+        client.get("/v1/projects", params={"limit": limit}, headers=HEADERS)
+    )
+    assert any(e["field"].endswith("limit") for e in body["errors"]), body
+
+
+@pytest.mark.parametrize("limit", ["1", "100"])
+def test_list_projects_accepts_limit_bounds(client: TestClient, limit: str) -> None:
+    r = client.get("/v1/projects", params={"limit": limit}, headers=HEADERS)
+    assert r.status_code == 200, r.text
+
+
+def test_list_projects_rejects_tampered_token(client: TestClient) -> None:
+    for i in range(2):
+        _create(client, f"alice {i}", HEADERS)
+    token = client.get("/v1/projects", params={"limit": 1}, headers=HEADERS).json()["nextToken"]
+    assert token
+    tampered = token[:-3] + ("AAA" if not token.endswith("AAA") else "BBB")
+    body = _assert_invalid_request(
+        client.get("/v1/projects", params={"nextToken": tampered}, headers=HEADERS)
+    )
+    assert body["detail"] == "nextToken is invalid or expired."
+    assert body["type"].endswith("/invalid-cursor")
+    assert body["instance"] == "/v1/projects"
+
+
+@pytest.mark.parametrize("token", ["", "garbage", "eyJub3QiOiAiYSBrZXkifQ"])
+def test_list_projects_rejects_garbage_tokens(client: TestClient, token: str) -> None:
+    body = _assert_invalid_request(
+        client.get("/v1/projects", params={"nextToken": token}, headers=HEADERS)
+    )
+    assert body["detail"] == "nextToken is invalid or expired."
+
+
+def test_list_projects_rejects_another_owners_token(client: TestClient) -> None:
+    for i in range(2):
+        _create(client, f"bob {i}", BOB)
+    bobs_token = client.get("/v1/projects", params={"limit": 1}, headers=BOB).json()["nextToken"]
+    assert bobs_token
+    # Bob can use it...
+    ok = client.get("/v1/projects", params={"nextToken": bobs_token}, headers=BOB)
+    assert ok.status_code == 200
+    # ...Alice cannot, even though it is a perfectly well-formed token.
+    _assert_invalid_request(
+        client.get("/v1/projects", params={"nextToken": bobs_token}, headers=HEADERS)
+    )
+
+
+def test_list_projects_rejects_forged_token_with_bad_shape(client: TestClient) -> None:
+    forged = encode_cursor({"GSI1PK": {"S": "OWNER#key-alice"}})  # missing PK/SK/GSI1SK
+    _assert_invalid_request(
+        client.get("/v1/projects", params={"nextToken": forged}, headers=HEADERS)
+    )
+
+
+def test_list_projects_requires_identity(client: TestClient) -> None:
+    r = client.get("/v1/projects")
+    assert r.status_code == 401
+    assert r.headers["content-type"].startswith("application/problem+json")
+
+
 # -- Lambda transport -------------------------------------------------------------
 
 
@@ -189,7 +320,12 @@ class _Ctx:
 
 
 def _apigw_event(
-    method: str, path: str, body: dict[str, Any] | None, api_key_id: str | None
+    method: str,
+    path: str,
+    body: dict[str, Any] | None,
+    api_key_id: str | None,
+    *,
+    query: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     return {
         "resource": "/{proxy+}",
@@ -200,8 +336,8 @@ def _apigw_event(
             "Host": "abc.execute-api.eu-west-2.amazonaws.com",
         },
         "multiValueHeaders": {},
-        "queryStringParameters": None,
-        "multiValueQueryStringParameters": None,
+        "queryStringParameters": query,
+        "multiValueQueryStringParameters": {k: [v] for k, v in query.items()} if query else None,
         "pathParameters": {"proxy": path.lstrip("/")},
         "stageVariables": None,
         "requestContext": {
@@ -263,3 +399,48 @@ def test_lambda_handler_get_project_returns_200_for_owner(client: TestClient) ->
     assert other["statusCode"] == 404, other
     assert json.loads(other["body"])["title"] == "Project not found"
     assert other["headers"]["content-type"].startswith("application/problem+json")
+
+
+def test_lambda_handler_lists_projects_with_query_string_pagination(client: TestClient) -> None:
+    from projects_api.main import handler
+
+    created = []
+    for i in range(3):
+        resp = handler(
+            _apigw_event("POST", "/v1/projects", {"name": f"lambda {i}", "type": "web"}, "k-list"),
+            _Ctx(),
+        )
+        assert resp["statusCode"] == 201, resp
+        created.append(json.loads(resp["body"]))
+    handler(
+        _apigw_event("POST", "/v1/projects", {"name": "not mine", "type": "web"}, "k-else"), _Ctx()
+    )
+
+    first = handler(
+        _apigw_event("GET", "/v1/projects", None, "k-list", query={"limit": "2"}), _Ctx()
+    )
+    assert first["statusCode"] == 200, first
+    body1 = json.loads(first["body"])
+    assert len(body1["items"]) == 2 and body1["nextToken"]
+
+    second = handler(
+        _apigw_event(
+            "GET",
+            "/v1/projects",
+            None,
+            "k-list",
+            query={"limit": "2", "nextToken": body1["nextToken"]},
+        ),
+        _Ctx(),
+    )
+    assert second["statusCode"] == 200, second
+    body2 = json.loads(second["body"])
+    assert len(body2["items"]) == 1 and body2["nextToken"] is None
+    assert {p["projectId"] for p in body1["items"] + body2["items"]} == {
+        p["projectId"] for p in created
+    }
+
+    bad = handler(_apigw_event("GET", "/v1/projects", None, "k-list", query={"limit": "0"}), _Ctx())
+    assert bad["statusCode"] == 400, bad
+    assert json.loads(bad["body"])["title"] == "Invalid request"
+    assert bad["headers"]["content-type"].startswith("application/problem+json")
