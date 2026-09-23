@@ -31,7 +31,7 @@ requires = ["uv_build>=0.10.9,<0.11.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "projects_api"
+module-name = ["projects_api", "projects_provisioner"]
 
 [tool.ruff]
 line-length = 100
@@ -55,6 +55,6 @@ filterwarnings = ["ignore::DeprecationWarning"]
 plugins = ["pydantic.mypy"]
 python_version = "3.12"
 strict = true
-packages = ["projects_api"]
+packages = ["projects_api", "projects_provisioner"]
 mypy_path = "src"
 ignore_missing_imports = true

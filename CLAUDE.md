@@ -39,6 +39,9 @@ src/projects_api/
   domain/models.py      Pydantic models (camelCase aliases on the wire)
   domain/exceptions.py  *Error classes raised by repositories/services
   repositories/*.py     DynamoDB access via boto3 client; no HTTP concepts
+src/projects_provisioner/
+  handler.py            stream consumer: CREATED -> PROVISIONING -> READY | FAILED
+  provisioners.py       Provisioner protocol + per-type placeholder implementations
 tests/unit, tests/integration (TestClient + moto), tests/smoke (deployed stage)
 infra/terraform/{bootstrap,modules/*,envs/*}
 docs/{PLAN.md,architecture.md,adr/,runbook.md,tickets/}

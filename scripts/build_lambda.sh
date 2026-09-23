@@ -30,6 +30,7 @@ uv pip install \
 
 echo "==> Copying application code"
 cp -R "${ROOT}/src/projects_api" "${STAGE_DIR}/projects_api"
+cp -R "${ROOT}/src/projects_provisioner" "${STAGE_DIR}/projects_provisioner"
 
 echo "==> Pruning caches, tests and type stubs"
 find "${STAGE_DIR}" -type d \( -name "__pycache__" -o -name "tests" -o -name "*.dist-info" \) -prune -exec rm -rf {} + 2>/dev/null || true

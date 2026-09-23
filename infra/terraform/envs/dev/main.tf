@@ -11,6 +11,7 @@ module "table" {
   source              = "../../modules/dynamodb_table"
   name                = local.name
   deletion_protection = var.environment == "prod"
+  stream_enabled      = true # consumed by module.provisioner
   tags                = local.tags
 }
 
@@ -51,6 +52,21 @@ module "observability" {
   monthly_budget_usd   = var.monthly_budget_usd
   api_p99_ms_threshold = var.api_p99_ms_threshold
   tags                 = local.tags
+}
+
+# Asynchronous provisioning: table stream -> provisioner Lambda -> status transitions.
+module "provisioner" {
+  source          = "../../modules/lambda_provisioner"
+  name            = "${local.name}-provisioner"
+  environment     = var.environment
+  zip_path        = var.lambda_zip_path
+  table_name      = module.table.name
+  table_arn       = module.table.arn
+  stream_arn      = module.table.stream_arn
+  alarm_topic_arn = module.observability.alarm_topic_arn
+
+  log_retention_days = var.log_retention_days
+  tags               = local.tags
 }
 
 module "waf" {
