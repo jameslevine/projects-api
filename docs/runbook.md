@@ -1,8 +1,7 @@
 # Projects API: operations runbook
 
-For the on-call engineer. Everything here describes what the repository deploys today; items
-that are being added by in-flight work are marked with their issue number, for example
-"(added in #21)". Names use `<env>`; the only environment that exists is `dev`
+For the on-call engineer. Everything here describes what the repository deploys today; work
+that is still open is linked by issue number in section 9. Names use `<env>`; the only environment that exists is `dev`
 (`projects-api-dev`). Production is [#28](https://github.com/jameslevine/projects-api/issues/28).
 
 Companion documents: [architecture.md](architecture.md) (components, data model, request flow),
@@ -243,18 +242,31 @@ module is changed), or remove it from the module.
 Two ids exist for one request, and they differ:
 
 - **API Gateway `requestId`** (`$context.requestId`): minted by the gateway, written to the
-  access log as `requestId`, returned to the client as `X-Request-Id` on every response and as
-  `requestId` in every problem+json body (added in #21). This is the id a user quotes.
+  access log as `requestId`, returned to the client as `X-Request-Id` on every response (success
+  and problem) and as `requestId` in every problem+json body, and stamped on every Lambda log
+  line of that invocation as `correlation_id`. This is the id a user quotes and the one to
+  search for.
 - **Lambda `aws_request_id`**: minted by the Lambda service per invocation; Powertools writes it
-  on every log line as `function_request_id`. It never appears in the access log and the client
-  never sees it. Until #21 lands, `api/errors.py` puts this Lambda id in `requestId` and
-  `X-Request-Id` on problem responses, so an id quoted by a user may be either kind.
+  on every log line as `function_request_id`, and it is the `RequestId` in the runtime's
+  `START`/`END`/`REPORT` lines. It never appears in the access log and the client never sees it.
 
-After #21, Powertools `correlation_id_path=API_GATEWAY_REST` puts the gateway `requestId` on
-every Lambda log line as `correlation_id`, and one structured line per request is logged with
-`route`, `method`, `status`, `owner_id`, `duration_ms` and `request_id` (added in #21). Requests
-rejected by the gateway (missing key -> 403, throttled -> 429) appear only in the access log:
-there is no Lambda invocation to find.
+How the id is chosen (`src/projects_api/api/context.py`, resolved once per request): the gateway
+`requestContext.requestId` if present; otherwise the Lambda `aws_request_id` (a direct
+invocation with no gateway); otherwise an incoming `X-Request-Id` header if it is 1 to 128
+printable characters (local runs behind another proxy); otherwise a fresh UUID4. Behind the
+gateway the first rule always applies, so header, problem body, access log and `correlation_id`
+all carry the same value.
+
+What the Lambda log group gets per request: `RequestContextMiddleware` writes one
+`request completed` line with `route` (the route template, for example
+`/v1/projects/{project_id}`), `method`, `status`, `owner_id` (the API key id, never the key
+value), `duration_ms` and `request_id`; never bodies, query strings or headers. Powertools
+(`correlation_id_path=API_GATEWAY_REST` on the handler in `main.py`, and
+`logger.set_correlation_id` in the middleware) adds `correlation_id` to that line and to every
+other line of the invocation, including `project created` and `Unhandled error`. Mangum logs a
+second INFO line per request of the form `POST /v1/projects 201` (method, path and status only).
+Requests rejected by the gateway (missing key -> 403, throttled -> 429) appear only in the access
+log: there is no Lambda invocation to find.
 
 ### Access log (`/aws/apigateway/projects-api-<env>/access`)
 
@@ -270,7 +282,7 @@ overhead.
 
 ### Lambda log (`/aws/lambda/projects-api-<env>`)
 
-After #21 (gateway id):
+With the gateway id (the normal case; it is the `X-Request-Id` the user quotes):
 
 ```text
 fields @timestamp, level, message, route, method, status, duration_ms, cold_start, xray_trace_id
@@ -278,15 +290,18 @@ fields @timestamp, level, message, route, method, status, duration_ms, cold_star
 | sort @timestamp asc
 ```
 
-Before #21, or when you have a Lambda id:
+When you only have a Lambda id (from a `REPORT` line or an X-Ray segment):
 
 ```text
-fields @timestamp, level, message, cold_start, xray_trace_id
+fields @timestamp, level, message, correlation_id, cold_start, xray_trace_id
 | filter function_request_id = "<id>"
 | sort @timestamp asc
 ```
 
-If you have a gateway id but no `correlation_id` (pre-#21 logs), join through the access log
+The result includes the `request completed` line, so this also recovers the gateway id.
+
+Logs written by versions deployed before request correlation existed carry no `correlation_id`
+(and their `requestId`/`X-Request-Id` was the Lambda id). For those, join through the access log
 timestamp: take `@timestamp` and `latencyMs` from the access log query, then in the Lambda group
 narrow the time range to that second and look for the `REPORT` line and any `ERROR` line:
 
@@ -450,7 +465,7 @@ First checks:
 
    If `coldStarts` is close to `invocations`, the p99 is cold-start time (typically 1 to 2 s for
    FastAPI + Pydantic on 512 MB), not a regression.
-2. Warm-invocation latency after #21:
+2. Warm-invocation latency from the `request completed` lines:
 
    ```text
    filter ispresent(duration_ms)
@@ -859,9 +874,9 @@ then both show nothing.
 
 - The smoke test has never been run against a deployed stage; the whole deploy path is
   validated only by `terraform validate` and CI: [#16](https://github.com/jameslevine/projects-api/issues/16).
-- `X-Request-Id` and the problem `requestId` are the Lambda request id, not the API Gateway
-  `requestId`, until [#21](https://github.com/jameslevine/projects-api/issues/21) lands; there
-  is no per-request log line before then, so tracing joins on timestamps (section 5).
+- Log lines from versions deployed before request correlation shipped
+  ([#21](https://github.com/jameslevine/projects-api/issues/21), closed) have no `correlation_id` and
+  quoted the Lambda id as `requestId`; trace those via the access-log timestamp join (section 5).
 - The DynamoDB system-errors alarm covers only the operations in `ddb_operations` (section 6);
   GSI1 throttling is visible in the console but has no alarm. Both came out of the alarm review
   in [#20](https://github.com/jameslevine/projects-api/issues/20) (closed).
