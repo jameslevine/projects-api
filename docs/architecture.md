@@ -505,6 +505,6 @@ The [README](../README.md) owns the step-by-step detail; this is the shape.
 
 - [ADR 0001: REST API for API keys and usage plans](adr/0001-rest-api-for-api-keys.md)
 - [ADR 0004: FastAPI with Mangum on a single Lambda](adr/0004-fastapi-mangum-on-lambda.md)
+- [ADR 0005: Per-type provisioning design (agent, mcp, web), Proposed](adr/0005-per-type-provisioning.md)
 - ADR 0002 (single-table design) and ADR 0003 (global name uniqueness) are written under
-  [S1-107](tickets/S1-107-readme-adr-0002-0003.md); ADR 0005 (provisioning design) under
-  [S4-403](tickets/S4-403-adr-provisioning-design.md).
+  [S1-107](tickets/S1-107-readme-adr-0002-0003.md).
