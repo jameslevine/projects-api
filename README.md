@@ -188,6 +188,13 @@ Pagination: `limit` defaults to 20 (1 to 100). `nextToken` is an opaque, URL-saf
 the calling key; pass it back unchanged to fetch the next page, and stop when it is `null`. A token
 may lead to an empty final page. Tokens from another key, or edited ones, return `400`.
 
+### OpenAPI
+
+The OpenAPI 3.1 document is served at `/v1/openapi.json` in every environment (Swagger UI at
+`/v1/docs` is local only). Every non-2xx response is declared as `application/problem+json`
+referencing the `Problem` schema, and the `ApiKeyAuth` scheme (`x-api-key` header) applies to
+all operations except `GET /health`. `tests/integration/test_openapi.py` validates the document.
+
 ### Validation rules
 
 All rules live in `src/projects_api/domain/validation.py`; the request model in
@@ -328,6 +335,7 @@ src/projects_api/
   observability.py      Powertools logger/tracer/metrics singletons
   api/deps.py           current_user (apiKeyId), repository dependency
   api/errors.py         RFC 7807 problem+json handlers; map domain errors here
+  api/openapi.py        OpenAPI post-processing (Problem schema, security scheme, examples)
   api/routes/*.py       one router per resource, prefix /v1
   domain/validation.py  the ONLY place validation rules live
   domain/models.py      Pydantic models (camelCase aliases on the wire)

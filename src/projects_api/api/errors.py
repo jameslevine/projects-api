@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from projects_api.domain.exceptions import (
@@ -22,6 +23,72 @@ from projects_api.observability import logger
 
 PROBLEM_CONTENT_TYPE = "application/problem+json"
 _TYPE_BASE = "https://projects-api.example/problems/"
+
+
+class ProblemFieldError(BaseModel):
+    """One failing field of a 400 validation problem."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: str = Field(
+        description="Dotted path of the offending property; empty when the whole body is invalid.",
+        examples=["name"],
+    )
+    message: str = Field(examples=["String should have at least 3 characters"])
+
+
+class Problem(BaseModel):
+    """RFC 7807 problem details: the body of every non-2xx response.
+
+    This documents exactly what `problem()` emits. `extra="forbid"` means the contract test
+    fails if a handler starts adding members that are not described here.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "type": _TYPE_BASE + "project-name-taken",
+                    "title": "Project name already exists",
+                    "status": 409,
+                    "detail": "A project named 'my-first-agent' already exists.",
+                    "instance": "/v1/projects",
+                    "requestId": "5d1a9b60-2f7c-4d3e-9a1b-7c8d9e0f1a2b",
+                },
+                {
+                    "type": _TYPE_BASE + "validation",
+                    "title": "Invalid request",
+                    "status": 400,
+                    "detail": "One or more fields failed validation.",
+                    "instance": "/v1/projects",
+                    "errors": [
+                        {"field": "name", "message": "String should have at least 3 characters"}
+                    ],
+                },
+            ]
+        },
+    )
+
+    type: str = Field(
+        description="URI identifying the problem type.",
+        examples=[_TYPE_BASE + "validation", _TYPE_BASE + "project-name-taken"],
+    )
+    title: str = Field(description="Short, human-readable summary of the problem type.")
+    status: int = Field(ge=400, le=599, description="HTTP status code, repeated from the response.")
+    detail: str = Field(description="Human-readable explanation specific to this occurrence.")
+    instance: str = Field(description="Path of the request that produced the problem.")
+    request_id: str | None = Field(
+        default=None,
+        alias="requestId",
+        description="API Gateway request id, present when running in AWS and echoed in the "
+        "`X-Request-Id` header. Quote it when reporting an error.",
+    )
+    errors: list[ProblemFieldError] | None = Field(
+        default=None,
+        description="Only on 400 validation problems: one entry per failing field.",
+    )
 
 
 def request_id(request: Request) -> str | None:

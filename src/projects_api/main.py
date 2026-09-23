@@ -12,6 +12,7 @@ from mangum.adapter import DEFAULT_TEXT_MIME_TYPES
 
 from projects_api import __version__
 from projects_api.api.errors import register_error_handlers
+from projects_api.api.openapi import API_DESCRIPTION, build_openapi
 from projects_api.api.routes import health, projects
 from projects_api.config import get_settings
 from projects_api.observability import logger, metrics, tracer
@@ -22,7 +23,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Projects API",
         version=__version__,
-        description="Create and manage projects that host agents, MCP servers and web apps.",
+        description=API_DESCRIPTION,
         openapi_url="/v1/openapi.json",
         docs_url="/v1/docs" if settings.is_local else None,
         redoc_url=None,
@@ -30,6 +31,15 @@ def create_app() -> FastAPI:
     register_error_handlers(app)
     app.include_router(health.router)
     app.include_router(projects.router)
+
+    def custom_openapi() -> dict[str, Any]:
+        """Serve the post-processed OpenAPI document, generated once and cached on the app."""
+        if app.openapi_schema is None:
+            app.openapi_schema = build_openapi(app)
+        return app.openapi_schema
+
+    # The override pattern FastAPI documents; mypy objects only to assigning a method.
+    app.openapi = custom_openapi  # type: ignore[method-assign]
     return app
 
 
