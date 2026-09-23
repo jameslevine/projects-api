@@ -894,7 +894,8 @@ aws ce list-cost-allocation-tags --tag-keys Project --type UserDefined
   against scanning.
 - No production environment; `dev` has deletion protection off and no alarm email by default:
   [#28](https://github.com/jameslevine/projects-api/issues/28).
-- No delete endpoint, so orphaned projects and reservations (disabled keys, restores) can only
-  be cleaned up in DynamoDB directly: [#25](https://github.com/jameslevine/projects-api/issues/25).
+- `DELETE /v1/projects/{projectId}` removes a project and its reservation, but only for the
+  owning key. Projects of a disabled key, or duplicates after a PITR restore, still have to be
+  cleaned up in DynamoDB directly (section 7).
 - API Gateway deployment rollback is normally impossible because Terraform destroys the
   replaced deployment (section 3).

@@ -24,6 +24,7 @@ from projects_api.domain.exceptions import (
 )
 from projects_api.domain.models import Project
 from projects_api.domain.validation import name_key
+from projects_api.observability import logger
 
 _BOTO_CONFIG = Config(retries={"mode": "adaptive", "max_attempts": 5})
 
@@ -115,6 +116,59 @@ class ProjectRepository:
                     raise ProjectNameTakenError(project.name) from exc
             raise
         return project
+
+    def delete(self, project_id: str, owner_id: str) -> None:
+        """Delete a project and release its name reservation in one transaction.
+
+        Raises ProjectNotFoundError when the project does not exist or belongs to another
+        owner; the caller cannot tell the two apart. The record is read first (consistent)
+        to learn the name key, but the deletes are still conditional, so a request that
+        loses a race with another delete also ends as ProjectNotFoundError. A reservation
+        that no longer points at this project is an invariant violation: it is logged and
+        the error propagates rather than reporting success.
+        """
+        project = self.get(project_id)
+        if project.owner_id != owner_id:
+            raise ProjectNotFoundError(project_id)
+        record_key = {"PK": {"S": project_pk(project_id)}, "SK": {"S": "META"}}
+        reservation_key = {"PK": {"S": name_pk(project.name)}, "SK": {"S": "RESERVATION"}}
+        try:
+            self._client.transact_write_items(
+                TransactItems=[
+                    {
+                        "Delete": {
+                            "TableName": self._table,
+                            "Key": record_key,
+                            "ConditionExpression": "attribute_exists(PK) AND ownerId = :owner",
+                            "ExpressionAttributeValues": {":owner": {"S": owner_id}},
+                        }
+                    },
+                    {
+                        "Delete": {
+                            "TableName": self._table,
+                            "Key": reservation_key,
+                            "ConditionExpression": "projectId = :id",
+                            "ExpressionAttributeValues": {":id": {"S": project_id}},
+                        }
+                    },
+                ]
+            )
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "TransactionCanceledException":
+                codes = [r.get("Code") for r in exc.response.get("CancellationReasons", [])]
+                # Index 0 is the record: it vanished or changed owner since the read.
+                if codes and codes[0] == "ConditionalCheckFailed":
+                    raise ProjectNotFoundError(project_id) from exc
+                # Index 1 is the reservation: the record exists but its name is not
+                # reserved for it. Never silently succeed; surface it for an operator.
+                if len(codes) > 1 and codes[1] == "ConditionalCheckFailed":
+                    logger.error(
+                        "name reservation does not point at the project being deleted",
+                        project_id=project_id,
+                        record_key=record_key["PK"]["S"],
+                        reservation_key=reservation_key["PK"]["S"],
+                    )
+            raise
 
     # -- reads ---------------------------------------------------------------
 

@@ -110,3 +110,26 @@ def get_project(project_id: str, owner_id: CurrentUser, repo: Repository) -> Pro
     if project.owner_id != owner_id:
         raise ProjectNotFoundError(project_id)
     return project
+
+
+@router.delete(
+    "/{project_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Delete a project",
+    responses={
+        404: {"description": "No project with this id belongs to the caller (problem+json)."},
+    },
+)
+def delete_project(project_id: str, owner_id: CurrentUser, repo: Repository) -> Response:
+    """Delete one of the caller's projects and release its name for reuse.
+
+    The record and its name reservation go in one transaction. A malformed id, an unknown
+    id and another owner's id all produce the same 404, and nothing is removed.
+    """
+    if not is_valid_project_id(project_id):
+        raise ProjectNotFoundError(project_id)
+    repo.delete(project_id, owner_id)
+    metrics.add_metric(name="ProjectsDeleted", unit="Count", value=1)
+    logger.info("project deleted", project_id=project_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

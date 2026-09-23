@@ -86,7 +86,7 @@ def test_api_key_security_scheme_applies_everywhere_but_health(spec: dict[str, A
 def test_operation_ids_are_unique_and_readable(spec: dict[str, Any]) -> None:
     ids = [operation["operationId"] for _, _, operation in _operations(spec)]
     assert len(ids) == len(set(ids)), ids
-    assert {"getHealth", "createProject"} <= set(ids)
+    assert {"getHealth", "createProject", "getProject", "listProjects", "deleteProject"} <= set(ids)
     for operation_id in ids:
         assert operation_id.isidentifier() and "_" not in operation_id, operation_id
 
@@ -102,6 +102,14 @@ def test_create_project_has_examples(spec: dict[str, Any]) -> None:
     example = created["content"]["application/json"]["example"]
     assert example["projectId"].startswith("prj_")
     assert example["status"] == "CREATED"
+
+
+def test_delete_project_is_204_without_content(spec: dict[str, Any]) -> None:
+    operation = spec["paths"]["/v1/projects/{project_id}"]["delete"]
+    assert operation["operationId"] == "deleteProject"
+    assert "content" not in operation["responses"]["204"]
+    assert "404" in operation["responses"]
+    assert "requestBody" not in operation
 
 
 @pytest.fixture

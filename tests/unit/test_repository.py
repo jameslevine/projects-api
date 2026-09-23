@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -201,3 +202,157 @@ def test_list_by_owner_reraises_other_client_errors_with_cursor() -> None:
     repo = ProjectRepository(Settings(table_name=TABLE_NAME), client=_ThrottlingClient())
     with pytest.raises(ClientError):
         repo.list_by_owner("key-1", limit=5, cursor={"PK": {"S": "x"}})
+
+
+# -- delete -----------------------------------------------------------------------
+
+
+def _item_exists(dynamodb_table: Any, pk: str, sk: str) -> bool:
+    resp = dynamodb_table.get_item(TableName=TABLE_NAME, Key={"PK": {"S": pk}, "SK": {"S": sk}})
+    return "Item" in resp
+
+
+def test_delete_removes_record_and_reservation_and_frees_the_name(
+    repo: ProjectRepository, dynamodb_table: Any
+) -> None:
+    project = Project.new(name="Release Me", type_=ProjectType.WEB, owner_id="key-1")
+    repo.create(project)
+
+    repo.delete(project.project_id, "key-1")
+
+    assert not _item_exists(dynamodb_table, project_pk(project.project_id), "META")
+    assert not _item_exists(dynamodb_table, name_pk("release me"), "RESERVATION")
+    with pytest.raises(ProjectNotFoundError):
+        repo.get(project.project_id)
+    # The name is free again, even under a different casing, for a different owner.
+    again = Project.new(name="RELEASE ME", type_=ProjectType.AGENT, owner_id="key-2")
+    assert repo.create(again) == again
+    assert repo.list_by_owner("key-1", limit=10) == ([], None)
+
+
+def test_delete_by_other_owner_raises_and_removes_nothing(
+    repo: ProjectRepository, dynamodb_table: Any
+) -> None:
+    project = Project.new(name="Alice Keeps", type_=ProjectType.WEB, owner_id="key-1")
+    repo.create(project)
+
+    with pytest.raises(ProjectNotFoundError):
+        repo.delete(project.project_id, "key-2")
+
+    assert _item_exists(dynamodb_table, project_pk(project.project_id), "META")
+    assert _item_exists(dynamodb_table, name_pk("alice keeps"), "RESERVATION")
+    assert repo.get(project.project_id) == project
+
+
+def test_delete_twice_raises_not_found(repo: ProjectRepository) -> None:
+    project = Project.new(name="Once Only", type_=ProjectType.MCP, owner_id="key-1")
+    repo.create(project)
+    repo.delete(project.project_id, "key-1")
+    with pytest.raises(ProjectNotFoundError):
+        repo.delete(project.project_id, "key-1")
+
+
+def test_delete_unknown_raises_not_found(repo: ProjectRepository) -> None:
+    with pytest.raises(ProjectNotFoundError):
+        repo.delete("prj_" + "0" * 32, "key-1")
+
+
+def test_delete_leaves_other_projects_and_reservations_alone(
+    repo: ProjectRepository, dynamodb_table: Any
+) -> None:
+    keep = Project.new(name="Keep", type_=ProjectType.WEB, owner_id="key-1")
+    gone = Project.new(name="Gone", type_=ProjectType.WEB, owner_id="key-1")
+    repo.create(keep)
+    repo.create(gone)
+    repo.delete(gone.project_id, "key-1")
+    assert repo.get(keep.project_id) == keep
+    assert _item_exists(dynamodb_table, name_pk("keep"), "RESERVATION")
+    with pytest.raises(ProjectNameTakenError):
+        repo.create(Project.new(name="KEEP", type_=ProjectType.WEB, owner_id="key-2"))
+
+
+class _DeleteStubClient:
+    """get_item returns a stored record; transact_write_items cancels with given reasons."""
+
+    def __init__(self, project: Project, reasons: list[dict[str, str]]) -> None:
+        self._project = project
+        self._reasons = reasons
+        self.transact_calls: list[dict[str, Any]] = []
+
+    def get_item(self, **_: Any) -> dict[str, Any]:
+        p = self._project
+        return {
+            "Item": {
+                "projectId": {"S": p.project_id},
+                "name": {"S": p.name},
+                "type": {"S": p.type.value},
+                "status": {"S": p.status.value},
+                "ownerId": {"S": p.owner_id},
+                "createdAt": {"S": p.created_at.isoformat()},
+                "updatedAt": {"S": p.updated_at.isoformat()},
+            }
+        }
+
+    def transact_write_items(self, **kwargs: Any) -> dict[str, Any]:
+        self.transact_calls.append(kwargs)
+        raise ClientError(
+            {
+                "Error": {"Code": "TransactionCanceledException", "Message": "cancelled"},
+                "CancellationReasons": self._reasons,
+            },
+            "TransactWriteItems",
+        )
+
+
+def test_delete_lost_race_on_record_is_not_found() -> None:
+    project = Project.new(name="Raced", type_=ProjectType.WEB, owner_id="key-1")
+    client = _DeleteStubClient(project, [{"Code": "ConditionalCheckFailed"}, {"Code": "None"}])
+    repo = ProjectRepository(Settings(table_name=TABLE_NAME), client=client)
+    with pytest.raises(ProjectNotFoundError):
+        repo.delete(project.project_id, "key-1")
+    (call,) = client.transact_calls
+    deletes = [item["Delete"] for item in call["TransactItems"]]
+    assert deletes[0]["Key"] == {"PK": {"S": project_pk(project.project_id)}, "SK": {"S": "META"}}
+    assert deletes[0]["ConditionExpression"] == "attribute_exists(PK) AND ownerId = :owner"
+    assert deletes[0]["ExpressionAttributeValues"] == {":owner": {"S": "key-1"}}
+    assert deletes[1]["Key"] == {"PK": {"S": name_pk("Raced")}, "SK": {"S": "RESERVATION"}}
+    assert deletes[1]["ConditionExpression"] == "projectId = :id"
+    assert deletes[1]["ExpressionAttributeValues"] == {":id": {"S": project.project_id}}
+
+
+def test_delete_reservation_mismatch_is_raised_not_swallowed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    project = Project.new(name="Dangling", type_=ProjectType.WEB, owner_id="key-1")
+    client = _DeleteStubClient(project, [{"Code": "None"}, {"Code": "ConditionalCheckFailed"}])
+    repo = ProjectRepository(Settings(table_name=TABLE_NAME), client=client)
+    with caplog.at_level(logging.ERROR), pytest.raises(ClientError):
+        repo.delete(project.project_id, "key-1")
+    records = [
+        r
+        for r in caplog.records
+        if r.getMessage() == "name reservation does not point at the project being deleted"
+    ]
+    assert len(records) == 1, [r.getMessage() for r in caplog.records]
+    record = records[0]
+    assert record.levelno == logging.ERROR
+    assert record.project_id == project.project_id
+    assert record.record_key == project_pk(project.project_id)
+    assert record.reservation_key == name_pk("dangling")
+
+
+def test_delete_other_cancellation_reasons_propagate() -> None:
+    project = Project.new(name="Conflicted", type_=ProjectType.WEB, owner_id="key-1")
+    client = _DeleteStubClient(project, [{"Code": "TransactionConflict"}, {"Code": "None"}])
+    repo = ProjectRepository(Settings(table_name=TABLE_NAME), client=client)
+    with pytest.raises(ClientError):
+        repo.delete(project.project_id, "key-1")
+
+
+def test_delete_owner_mismatch_never_reaches_the_transaction() -> None:
+    project = Project.new(name="Not Yours", type_=ProjectType.WEB, owner_id="key-1")
+    client = _DeleteStubClient(project, [])
+    repo = ProjectRepository(Settings(table_name=TABLE_NAME), client=client)
+    with pytest.raises(ProjectNotFoundError):
+        repo.delete(project.project_id, "key-2")
+    assert client.transact_calls == []

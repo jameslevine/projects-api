@@ -18,10 +18,9 @@ around the three runtime components. The code is in [`src/projects_api/`](../src
 the infrastructure in [`infra/terraform/`](../infra/terraform/).
 
 Implemented endpoints: `GET /health` (public); `POST /v1/projects`, `GET /v1/projects`
-(newest first, cursor pagination) and `GET /v1/projects/{projectId}` (key required; another
-owner's project is a 404). `DELETE /v1/projects/{projectId}` is planned
-([S4-401](tickets/S4-401-delete-project.md), [#25](https://github.com/jameslevine/projects-api/issues/25));
-see [docs/PLAN.md](PLAN.md).
+(newest first, cursor pagination), `GET /v1/projects/{projectId}` and
+`DELETE /v1/projects/{projectId}` (key required; another owner's project is a 404 and a delete
+releases the name for reuse). Provisioning is the next slice; see [docs/PLAN.md](PLAN.md).
 
 ## Component diagram
 
@@ -134,6 +133,15 @@ plus DynamoDB lock table) is created once by [`infra/terraform/bootstrap/main.tf
    `ProjectNameTakenError` is mapped to 409 by [`api/errors.py`](../src/projects_api/api/errors.py).
    Every problem response carries `requestId` (the Lambda request id) in the body and an
    `X-Request-Id` header.
+
+`DELETE /v1/projects/{projectId}` follows steps 1 to 4, then checks the id shape (a malformed
+id is a 404, not a 400, and never reaches DynamoDB), reads the record with a consistent
+`GetItem` to check ownership and learn the name key (another owner's project is a 404 with
+nothing written), and issues one `TransactWriteItems` with two conditional `Delete`s: the record
+(`attribute_exists(PK) AND ownerId = :owner`) and the reservation (`projectId = :id`). Success
+is 204 with no body and emits `ProjectsDeleted`; a lost race on the record condition is a 404,
+while a reservation that no longer points at the project is logged at error and surfaces as a
+500 rather than a silent success ([ADR 0003](adr/0003-global-name-uniqueness.md)).
 
 ## Data model
 
@@ -467,8 +475,8 @@ Implemented:
 
 Gaps:
 
-- No data lifecycle for projects: delete (and releasing the name reservation) is
-  [S4-401](tickets/S4-401-delete-project.md).
+- Deletion is explicit (`DELETE /v1/projects/{projectId}`); there is no expiry for projects
+  that are never provisioned, so abandoned names stay reserved until their owner deletes them.
 - Production sizing (and whether prod needs different memory or concurrency) is
   [S4-404](tickets/S4-404-prod-environment.md).
 - No measurement of utilisation on a live stage yet: [S1-108](tickets/S1-108-smoke-deployed-stage.md).

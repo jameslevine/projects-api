@@ -111,9 +111,13 @@ something DynamoDB enforces with a strongly consistent conditional write, and th
 ties that guarantee to the project record. This is the pattern the repo's rule "always use
 `ConditionExpression`s; never read-then-write" (`CLAUDE.md`) exists for.
 
-### Releasing the reservation on delete (S4-401)
+### Releasing the reservation on delete
 
-`DELETE /v1/projects/{projectId}` will remove both items in one `TransactWriteItems`:
+`ProjectRepository.delete(project_id, owner_id)` (behind `DELETE /v1/projects/{projectId}`)
+first reads the record with a consistent `GetItem`: the reservation's key is `NAME#<nameKey>`,
+and the name key is only known from the record. A missing record, or one owned by another key,
+raises `ProjectNotFoundError` (`404`, never `403`) before anything is written. It then removes
+both items in one `TransactWriteItems`:
 
 ```text
 TransactItems:
@@ -121,13 +125,18 @@ TransactItems:
   [1] Delete NAME#<nameKey> / RESERVATION ConditionExpression: projectId = :id
 ```
 
-The first condition makes the delete owner-scoped (another owner's project, or a missing
-project, fails the condition and is reported as `404`, never `403`). The second condition
-ensures the reservation is only released if it still points at the project being deleted, so a
-stale or racing request cannot free a name that has since been legitimately re-reserved.
-Because both deletes are in one transaction, a name is either fully owned or fully free; there
-is no window in which the record is gone but the name is still blocked, or vice versa. After a
-successful delete, a create with the same name succeeds with `201`.
+The read does not weaken the "never read-then-write" rule because the deletes are still
+conditional: if the record vanished or changed owner between the read and the write (a race
+with another delete), condition [0] fails and the request ends as `404` like any other missing
+project. Condition [1] ensures the reservation is released only if it still points at the
+project being deleted, so a stale request cannot free a name that has since been legitimately
+re-reserved. If [1] fails while [0] would have passed, the record exists but its name is not
+reserved for it; that is an invariant violation, so the repository logs both keys at error
+level and lets the error surface as `500` rather than reporting success and leaving a dangling
+reservation. Because both deletes are in one transaction, a name is either fully owned or fully
+free; there is no window in which the record is gone but the name is still blocked, or vice
+versa. After a successful delete, a create with the same name (any casing, any owner) succeeds
+with `201` (`tests/unit/test_repository.py::test_delete_removes_record_and_reservation_and_frees_the_name`).
 
 ## Consequences
 

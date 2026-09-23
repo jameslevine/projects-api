@@ -309,6 +309,79 @@ def test_list_projects_requires_identity(client: TestClient) -> None:
     assert r.headers["content-type"].startswith("application/problem+json")
 
 
+# -- DELETE /v1/projects/{projectId} ------------------------------------------------
+
+
+def test_delete_project_returns_204_then_404_and_frees_the_name(client: TestClient) -> None:
+    created = _create(client, "Recyclable", HEADERS)
+    path = f"/v1/projects/{created['projectId']}"
+
+    r = client.delete(path, headers=HEADERS)
+    assert r.status_code == 204, r.text
+    assert r.content == b""
+    assert "content-type" not in r.headers or not r.content
+
+    _assert_not_found(client.get(path, headers=HEADERS))
+    _assert_not_found(client.delete(path, headers=HEADERS))
+    listed = client.get("/v1/projects", headers=HEADERS).json()["items"]
+    assert created["projectId"] not in {p["projectId"] for p in listed}
+
+    again = _create(client, "recyclable", BOB)  # same name, other case, other owner: free
+    assert again["projectId"] != created["projectId"]
+
+
+def test_delete_project_returns_404_for_other_owner_and_removes_nothing(
+    client: TestClient,
+) -> None:
+    created = _create(client, "Alice Only Delete", HEADERS)
+    path = f"/v1/projects/{created['projectId']}"
+    r = client.delete(path, headers=BOB)
+    _assert_not_found(r)
+    assert r.json()["instance"] == path
+    assert client.get(path, headers=HEADERS).json() == created
+    # The name is still reserved.
+    dup = client.post(
+        "/v1/projects", json={"name": "alice only delete", "type": "web"}, headers=BOB
+    )
+    assert dup.status_code == 409
+
+
+def test_delete_project_returns_404_for_unknown_well_formed_id(client: TestClient) -> None:
+    unknown = Project.new(name="never", type_=ProjectType.AGENT, owner_id="key-alice").project_id
+    _assert_not_found(client.delete(f"/v1/projects/{unknown}", headers=HEADERS))
+
+
+@pytest.mark.parametrize("bad_id", ["prj_doesnotexist", "prj_" + "A" * 32, "not-an-id"])
+def test_delete_project_returns_404_for_malformed_id_without_touching_the_table(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, bad_id: str
+) -> None:
+    def _must_not_be_called(self: ProjectRepository, project_id: str, owner_id: str) -> None:
+        raise AssertionError(f"repository.delete was called with {project_id!r}")
+
+    monkeypatch.setattr(ProjectRepository, "delete", _must_not_be_called)
+    _assert_not_found(client.delete(f"/v1/projects/{bad_id}", headers=HEADERS))
+
+
+def test_delete_project_requires_identity(client: TestClient) -> None:
+    created = _create(client, "Needs Identity Too", HEADERS)
+    r = client.delete(f"/v1/projects/{created['projectId']}")
+    assert r.status_code == 401
+    assert r.headers["content-type"].startswith("application/problem+json")
+    assert client.get(f"/v1/projects/{created['projectId']}", headers=HEADERS).status_code == 200
+
+
+def test_delete_adds_projects_deleted_metric_only_on_success(client: TestClient) -> None:
+    from projects_api.observability import metrics
+
+    created = _create(client, "Metered Delete", HEADERS)
+    metrics.clear_metrics()
+    assert client.delete(f"/v1/projects/{created['projectId']}", headers=BOB).status_code == 404
+    assert "ProjectsDeleted" not in metrics.metric_set  # empty set cannot be serialised
+    assert client.delete(f"/v1/projects/{created['projectId']}", headers=HEADERS).status_code == 204
+    assert metrics.serialize_metric_set()["ProjectsDeleted"] == [1]
+    metrics.clear_metrics()
+
+
 # -- Metrics ------------------------------------------------------------------------
 
 
@@ -519,3 +592,41 @@ def test_lambda_handler_conflict_flushes_project_name_conflicts_metric(
     assert metric_set["Dimensions"] == [["service"]]
     assert blob["service"] == "projects-api"
     assert "ProjectsCreated" not in blob
+
+
+def test_lambda_handler_deletes_project_and_flushes_projects_deleted_metric(
+    client: TestClient, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from projects_api.main import handler
+    from projects_api.observability import metrics
+
+    created = handler(
+        _apigw_event("POST", "/v1/projects", {"name": "lambda delete", "type": "web"}, "k-del"),
+        _Ctx(),
+    )
+    assert created["statusCode"] == 201, created
+    path = f"/v1/projects/{json.loads(created['body'])['projectId']}"
+
+    other = handler(_apigw_event("DELETE", path, None, "k-other"), _Ctx())
+    assert other["statusCode"] == 404, other
+    assert json.loads(other["body"])["title"] == "Project not found"
+
+    metrics.clear_metrics()
+    capsys.readouterr()
+    resp = handler(_apigw_event("DELETE", path, None, "k-del"), _Ctx())
+    assert resp["statusCode"] == 204, resp
+    assert not resp.get("body")
+    blobs = [b for b in _emf_blobs(capsys.readouterr().out) if "ProjectsDeleted" in b]
+    assert len(blobs) == 1, blobs
+    assert blobs[0]["ProjectsDeleted"] == [1]
+    (metric_set,) = blobs[0]["_aws"]["CloudWatchMetrics"]
+    assert {"Name": "ProjectsDeleted", "Unit": "Count"} in metric_set["Metrics"]
+    assert metric_set["Dimensions"] == [["service"]]
+
+    gone = handler(_apigw_event("GET", path, None, "k-del"), _Ctx())
+    assert gone["statusCode"] == 404, gone
+    recreated = handler(
+        _apigw_event("POST", "/v1/projects", {"name": "Lambda Delete", "type": "mcp"}, "k-del"),
+        _Ctx(),
+    )
+    assert recreated["statusCode"] == 201, recreated
