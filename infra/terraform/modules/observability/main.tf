@@ -275,6 +275,7 @@ resource "aws_cloudwatch_dashboard" "this" {
           metrics = [
             [var.metrics_namespace, "ProjectsCreated", "service", var.service_name],
             [".", "ProjectNameConflicts", ".", "."],
+            [".", "ProjectsDeleted", ".", "."],
             [".", "ColdStart", "function_name", var.lambda_function_name, "service", var.service_name],
           ]
         }
