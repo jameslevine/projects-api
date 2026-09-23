@@ -46,5 +46,6 @@ module "observability" {
   table_name           = module.table.name
   alarm_email          = var.alarm_email
   monthly_budget_usd   = var.monthly_budget_usd
+  api_p99_ms_threshold = var.api_p99_ms_threshold
   tags                 = local.tags
 }

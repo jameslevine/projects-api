@@ -23,7 +23,7 @@ from projects_api.domain.exceptions import (
     ProjectNameTakenError,
     ProjectNotFoundError,
 )
-from projects_api.observability import logger
+from projects_api.observability import logger, metrics
 
 PROBLEM_CONTENT_TYPE = "application/problem+json"
 _TYPE_BASE = "https://projects-api.example/problems/"
@@ -154,6 +154,8 @@ def register_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(ProjectNameTakenError)
     async def _name_taken(request: Request, exc: ProjectNameTakenError) -> JSONResponse:
+        # Business signal for the dashboard: how often callers collide on names.
+        metrics.add_metric(name="ProjectNameConflicts", unit="Count", value=1)
         return problem(
             request,
             status_code=status.HTTP_409_CONFLICT,
