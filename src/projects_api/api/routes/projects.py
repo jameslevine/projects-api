@@ -1,7 +1,13 @@
 from fastapi import APIRouter, Response, status
 
 from projects_api.api.deps import CurrentUser, Repository
-from projects_api.domain.models import CreateProjectRequest, Project, ProjectResponse
+from projects_api.domain.exceptions import ProjectNotFoundError
+from projects_api.domain.models import (
+    CreateProjectRequest,
+    Project,
+    ProjectResponse,
+    is_valid_project_id,
+)
 from projects_api.observability import logger, metrics
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
@@ -30,4 +36,27 @@ def create_project(
     metrics.add_metric(name="ProjectsCreated", unit="Count", value=1)
     logger.info("project created", project_id=project.project_id, type=project.type.value)
     response.headers["Location"] = f"/v1/projects/{project.project_id}"
+    return project
+
+
+@router.get(
+    "/{project_id}",
+    response_model=ProjectResponse,
+    response_model_by_alias=True,
+    summary="Get a project",
+    responses={
+        404: {"description": "No project with this id belongs to the caller (problem+json)."},
+    },
+)
+def get_project(project_id: str, owner_id: CurrentUser, repo: Repository) -> Project:
+    """Return one of the caller's projects.
+
+    A malformed id, an unknown id and another owner's id all produce the same 404 so
+    that project ids cannot be enumerated or probed.
+    """
+    if not is_valid_project_id(project_id):
+        raise ProjectNotFoundError(project_id)
+    project = repo.get(project_id)
+    if project.owner_id != owner_id:
+        raise ProjectNotFoundError(project_id)
     return project

@@ -174,7 +174,7 @@ Base URL: `http://localhost:8080` locally, or the `api_url` Terraform output (wh
 |---|---|---|---|---|
 | `GET` | `/health` | public | none | `200` `{"status": "ok", "version": "<semver>"}` |
 | `POST` | `/v1/projects` | API key | `{"name": string, "type": "agent" \| "mcp" \| "web"}`; no other properties | `201` project record + `Location`; `400` validation (`errors[]`); `401` no identity (local only); `403` missing or invalid key (gateway); `409` name taken; `429` throttled (gateway) |
-| `GET` | `/v1/projects/{projectId}` | API key | none | planned (S2), [#17](https://github.com/jameslevine/projects-api/issues/17): `200` for the owner, `404` otherwise |
+| `GET` | `/v1/projects/{projectId}` | API key | none | `200` project record for the owner; `404` when the id is malformed, unknown or belongs to another key; `401` no identity (local only); `403` missing or invalid key (gateway); `429` throttled (gateway) |
 | `GET` | `/v1/projects` | API key | none | planned (S2), [#18](https://github.com/jameslevine/projects-api/issues/18): `200` list of the caller's projects with cursor pagination |
 | `DELETE` | `/v1/projects/{projectId}` | API key | none | planned (S4), [#25](https://github.com/jameslevine/projects-api/issues/25): `204`, `404` for missing or another owner's project |
 
