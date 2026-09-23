@@ -20,8 +20,19 @@ variable "lambda_memory_mb" {
 }
 
 variable "alarm_email" {
-  type    = string
-  default = null
+  description = <<-EOT
+    Email subscribed to the alarm SNS topic and budget notifications. WITHOUT THIS NOBODY IS
+    PAGED: alarms only change state in the console. Set it in <env>.tfvars for any environment
+    somebody relies on and confirm the subscription email AWS sends. null skips the subscription.
+  EOT
+  type        = string
+  default     = null
+}
+
+variable "log_retention_days" {
+  description = "Retention for the Lambda, API Gateway access and WAF log groups. Raise for prod."
+  type        = number
+  default     = 14
 }
 
 variable "monthly_budget_usd" {

@@ -135,19 +135,21 @@ resource "aws_api_gateway_gateway_response" "throttled" {
 resource "aws_api_gateway_deployment" "this" {
   rest_api_id = aws_api_gateway_rest_api.this.id
 
-  # Redeploy whenever any of the API definition changes.
+  # Redeploy whenever any part of the API definition changes. Hashing the whole resources
+  # (not just their ids) means in-place edits to methods, integrations, the validator or the
+  # gateway responses also produce a new deployment.
   triggers = {
     redeployment = sha1(jsonencode([
-      aws_api_gateway_resource.health.id,
-      aws_api_gateway_method.health_get.id,
-      aws_api_gateway_integration.health_get.id,
-      aws_api_gateway_resource.proxy.id,
-      aws_api_gateway_method.proxy_any.id,
-      aws_api_gateway_integration.proxy_any.id,
-      aws_api_gateway_request_validator.params.id,
-      aws_api_gateway_gateway_response.unauthorized.id,
-      aws_api_gateway_gateway_response.invalid_api_key.id,
-      aws_api_gateway_gateway_response.throttled.id,
+      aws_api_gateway_resource.health,
+      aws_api_gateway_method.health_get,
+      aws_api_gateway_integration.health_get,
+      aws_api_gateway_resource.proxy,
+      aws_api_gateway_method.proxy_any,
+      aws_api_gateway_integration.proxy_any,
+      aws_api_gateway_request_validator.params,
+      aws_api_gateway_gateway_response.unauthorized,
+      aws_api_gateway_gateway_response.invalid_api_key,
+      aws_api_gateway_gateway_response.throttled,
       var.lambda_invoke_arn,
     ]))
   }

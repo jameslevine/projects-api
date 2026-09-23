@@ -21,6 +21,11 @@ jobs:
       - run: uv run ruff check src tests scripts
       - run: uv run ruff format --check src tests scripts
       - run: uv run mypy
+      - name: shellcheck (scripts/*.sh, tests/smoke/smoke.sh)
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          severity: style
+          ignore_paths: .venv build
       - run: uv run pytest --cov=projects_api --cov-report=term
       - name: Build Lambda package (arm64)
         run: scripts/build_lambda.sh

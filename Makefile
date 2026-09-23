@@ -2,7 +2,7 @@
 ENV ?= dev
 TF_DIR := infra/terraform/envs/$(ENV)
 
-.PHONY: help install lint format test cov run-local local-db build tf-fmt tf-validate tf-lint tf-scan tf-init tf-plan tf-apply tf-bootstrap smoke rollback clean
+.PHONY: help install lint format sh-lint test cov run-local local-db build tf-fmt tf-validate tf-lint tf-scan tf-init tf-plan tf-apply tf-bootstrap smoke rollback clean
 
 help: ## Show targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -14,6 +14,9 @@ lint: ## Ruff lint + format check + mypy
 	uv run ruff check src tests scripts
 	uv run ruff format --check src tests scripts
 	uv run mypy
+
+sh-lint: ## shellcheck the shell scripts (shellcheck on PATH; CI runs the same at severity style)
+	shellcheck -S style scripts/*.sh tests/smoke/smoke.sh
 
 format: ## Auto-format
 	uv run ruff format src tests scripts
