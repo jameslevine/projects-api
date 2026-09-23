@@ -39,6 +39,6 @@ output "dashboard_name" {
 }
 
 output "waf_web_acl_arn" {
-  description = "Web ACL attached to the stage, or null when enable_waf is false."
+  description = "Web ACL attached to the stage (enable_waf defaults to true in prod)."
   value       = module.stack.waf_web_acl_arn
 }
