@@ -36,7 +36,7 @@ Region: **eu-west-2** (London). Everything is tagged `Project=projects-api`,
 | Dashboard | `projects-api-<env>` | `infra/terraform/modules/observability` |
 | Alarm topic | SNS `projects-api-<env>-alarms` | same |
 | Budget | `projects-api-<env>-monthly` (default USD 20) | same |
-| Custom metrics | CloudWatch namespace `ProjectsApi`, dimension `service=projects-api`: `ProjectsCreated`, `ColdStart`, `ProjectNameConflicts` (added in #20) | `src/projects_api/observability.py`, `api/routes/projects.py` |
+| Custom metrics | CloudWatch namespace `ProjectsApi`: `ProjectsCreated` and `ProjectNameConflicts` (dimension `service=projects-api`), `ColdStart` (dimensions `function_name=projects-api-<env>` and `service=projects-api`) | `src/projects_api/observability.py`, `api/routes/projects.py`, `api/errors.py` |
 | Terraform state | S3 bucket from `infra/terraform/bootstrap`, key `projects-api/<env>/terraform.tfstate`, lock table `projects-api-terraform-locks` | `infra/terraform/envs/<env>/backend.hcl` (not committed) |
 
 Console shortcuts (dev):
@@ -103,7 +103,10 @@ After the apply, on dashboard `projects-api-<env>` for the next 10 to 15 minutes
   cold starts.
 - "Lambda invocations, errors, throttles": `Errors` and `Throttles` zero.
 - "Business: projects created vs name conflicts": one `ProjectsCreated` and one
-  `ProjectNameConflicts` (added in #20) from the smoke test.
+  `ProjectNameConflicts` from the smoke test, plus a `ColdStart` for each new execution
+  environment.
+- "DynamoDB consumed capacity and errors": some consumed read and write capacity, and
+  `ReadThrottleEvents`, `WriteThrottleEvents` and "SystemErrors (all operations)" flat at zero.
 - Alarm list filtered on `projects-api-<env>`: everything `OK` or `INSUFFICIENT_DATA`
   (the latter is normal on a quiet stage because `treat_missing_data = notBreaching`).
 
@@ -331,7 +334,8 @@ Take `project_id` from the `project created` log line (or from the user) and see
 
 All alarms are defined in `infra/terraform/modules/observability/main.tf`, evaluate on 5-minute
 periods, use `treat_missing_data = notBreaching` and notify SNS `projects-api-<env>-alarms`.
-Only `-lambda-errors` and `-api-5xx` also send an OK notification; the others go quiet without
+Only `-lambda-errors`, `-api-5xx` and `-api-latency-p99` also send an OK notification; the
+others go quiet without
 telling you. Thresholds come from module variables with the defaults shown.
 
 General first step for any alarm: open dashboard `projects-api-<env>` and set the time range to
@@ -547,7 +551,7 @@ First checks:
    An empty `apiKeyId` with `403` is an unauthenticated caller (scanner or misconfigured
    client). One key with many `429`s has exceeded 10 req/s or its 10,000/month quota
    (`get-usage`, section 4).
-3. Business metric `ProjectNameConflicts` (added in #20) on the dashboard: a burst of `409`s
+3. Business metric `ProjectNameConflicts` on the dashboard: a burst of `409`s
    from one key is usually a retry loop.
 
 Likely causes: a client retrying a failing request in a loop; a disabled or rotated key still in
@@ -561,10 +565,11 @@ limited to API Gateway requests and access-log lines.
 Escalate: sustained abuse from many IPs, or 4xx caused by a server-side change (for example a
 validation rule tightened by a deploy, visible as `400` from previously good clients).
 
-### `projects-api-<env>-api-latency-p99` (added in #20)
+### `projects-api-<env>-api-latency-p99`
 
-`AWS/ApiGateway Latency` p99, `ApiName=projects-api-<env>`, `Stage=live`, above the threshold
-variable (default 1500 ms) in 3 of 3 periods.
+`AWS/ApiGateway Latency` p99, `ApiName=projects-api-<env>`, `Stage=live`, >
+`api_p99_ms_threshold` (1500 ms; settable per environment in `envs/<env>/variables.tf`) in 3 of 3
+consecutive 5-minute periods (`datapoints_to_alarm = 3`).
 
 Meaning: end-to-end latency as seen at the gateway (including Lambda cold starts and gateway
 overhead) is high for the slowest 1% of requests. It usually fires together with
@@ -589,7 +594,11 @@ Mitigation and escalation: as for `-lambda-duration-p99`.
 
 ### `projects-api-<env>-ddb-system-errors`
 
-`AWS/DynamoDB SystemErrors`, `TableName=projects-api-<env>`, Sum >= 1 in one 5-minute period.
+Metric math: `SUM` of `AWS/DynamoDB SystemErrors` (Sum) over one series per operation in
+`var.ddb_operations` (`GetItem`, `Query`, `TransactWriteItems`, `DeleteItem`), each with
+dimensions `TableName=projects-api-<env>` and `Operation=<op>`; >= 1 in one 5-minute period.
+`SystemErrors` is only published per `TableName` + `Operation`, which is why the alarm sums
+per-operation series rather than reading a table-level metric.
 
 Meaning: DynamoDB itself returned a 5xx (`InternalServerError`, `ServiceUnavailable`) for a
 request against the table. This is an AWS-side fault, not a bug in the API; boto3 retries these
@@ -597,9 +606,11 @@ request against the table. This is an AWS-side fault, not a bug in the API; boto
 
 First checks:
 
-1. AWS Health Dashboard for DynamoDB in eu-west-2, and the table's
-   `SuccessfulRequestLatency` and `SystemErrors` metrics by `Operation` (CloudWatch > Metrics >
-   DynamoDB > Table Operation Metrics).
+1. Which operation: open the alarm in the console and expand the metric graph, or CloudWatch >
+   Metrics > DynamoDB > Table Operation Metrics > `projects-api-<env>`, `SystemErrors` and
+   `SuccessfulRequestLatency` per `Operation`. The dashboard widget "DynamoDB consumed capacity
+   and errors" plots the same total via a `SEARCH` over every operation. Then check the AWS
+   Health Dashboard for DynamoDB in eu-west-2.
 2. Did anything reach the client? Access log `status like /^5/` (as in `-api-5xx`) and Lambda
    log:
 
@@ -611,9 +622,10 @@ First checks:
 3. `aws dynamodb describe-table --table-name projects-api-dev --query 'Table.{Status:TableStatus,GSI:GlobalSecondaryIndexes[].IndexStatus}'`
    should be `ACTIVE` everywhere.
 
-Note: AWS documents `SystemErrors` with dimensions `TableName` and `Operation`; an alarm on
-`TableName` alone may receive no data and stay in `INSUFFICIENT_DATA`. The alarm dimension
-review in #20 covers this. If you see this alarm in `INSUFFICIENT_DATA` forever, that is why.
+Maintenance: the alarm only covers the operations listed in `ddb_operations`
+(`infra/terraform/modules/observability/variables.tf`). When the repository starts calling a new
+DynamoDB operation (for example `UpdateItem` or `BatchWriteItem`), add it to that list, or its
+system errors will not be alarmed on. The dashboard `SEARCH` needs no change.
 
 Likely causes: a DynamoDB service event.
 
@@ -625,8 +637,9 @@ case open an AWS Support case.
 
 ### `projects-api-<env>-ddb-throttled`
 
-`AWS/DynamoDB ThrottledRequests`, `TableName=projects-api-<env>`, Sum >= 1 in one 5-minute
-period.
+Metric math: `AWS/DynamoDB ReadThrottleEvents + WriteThrottleEvents` (Sum, table level,
+`TableName=projects-api-<env>`) >= 1 in one 5-minute period. These count throttled read and
+write events on the base table; GSI throttling is published separately (below).
 
 Meaning: DynamoDB rejected requests with `ProvisionedThroughputExceededException` (the same
 error name is used for on-demand tables). The table is on-demand, so this means either a
@@ -637,9 +650,11 @@ if all attempts fail.
 
 First checks:
 
-1. Which side and which index: CloudWatch > Metrics > DynamoDB, `ReadThrottleEvents` and
-   `WriteThrottleEvents` for the table and for `GlobalSecondaryIndexName=GSI1`; `ThrottledRequests`
-   by `Operation` (`TransactWriteItems`, `GetItem`, `Query`).
+1. Which side and which index: open the alarm graph to see whether `reads` or `writes` breached,
+   then CloudWatch > Metrics > DynamoDB, `ReadThrottleEvents` and `WriteThrottleEvents` for
+   `GlobalSecondaryIndexName=GSI1` (not alarmed on; the dashboard widget shows the table-level
+   pair) and `ThrottledRequests` by `Operation` (`TransactWriteItems`, `GetItem`, `Query`) to
+   see which call is affected.
 2. Traffic shape in the access log:
 
    ```text
@@ -656,11 +671,6 @@ First checks:
    filter exception like /ProvisionedThroughputExceededException|ThrottlingException/
    | stats count(*) by bin(5m)
    ```
-
-Note: as with `SystemErrors`, AWS documents `ThrottledRequests` with `TableName` and
-`Operation`; the `TableName`-only alarm may never receive data (#20 reviews this). The
-`ReadThrottleEvents`/`WriteThrottleEvents` metrics do have `TableName`-only series and are the
-reliable console check.
 
 Likely causes: a load test or retry loop from one key; an owner partition in GSI1 with very
 many projects; a sudden traffic step after a long quiet period (on-demand needs time to scale).
@@ -819,8 +829,9 @@ then both show nothing.
 - [ ] Compare with expected drivers, roughly in this order for a low-traffic API:
   - **API Gateway REST**: per request (every call, including gateway-rejected 403/429s).
   - **CloudWatch**: log ingestion and storage for both log groups (14-day retention), alarms
-    (8 after #20; the two p99 alarms use percentile statistics and the 4XX ratio alarm
-    evaluates three metrics, both billed higher than a plain alarm), custom metrics in
+    (8; the two p99 alarms use percentile statistics, and the 4XX ratio, DynamoDB system-errors
+    and DynamoDB throttled alarms are metric-math alarms billed per metric evaluated, 3, 4 and 2
+    respectively, all costing more than a plain alarm), custom metrics in
     `ProjectsApi`, dashboard (first three per account are free).
   - **Lambda**: requests and GB-seconds at 512 MB arm64; cold starts count.
   - **DynamoDB on-demand**: read/write request units (a create is a 2-item transaction, so
@@ -851,8 +862,9 @@ then both show nothing.
 - `X-Request-Id` and the problem `requestId` are the Lambda request id, not the API Gateway
   `requestId`, until [#21](https://github.com/jameslevine/projects-api/issues/21) lands; there
   is no per-request log line before then, so tracing joins on timestamps (section 5).
-- `ProjectNameConflicts`, the API latency p99 alarm and the alarm dimension review (in particular
-  the `TableName`-only DynamoDB alarms in section 6): [#20](https://github.com/jameslevine/projects-api/issues/20).
+- The DynamoDB system-errors alarm covers only the operations in `ddb_operations` (section 6);
+  GSI1 throttling is visible in the console but has no alarm. Both came out of the alarm review
+  in [#20](https://github.com/jameslevine/projects-api/issues/20) (closed).
 - No WAF in front of the API; the gateway's own throttling and key check are the only
   protection against scanning: [#23](https://github.com/jameslevine/projects-api/issues/23).
 - No rollback script; the alias is repointed by hand (section 3): [#24](https://github.com/jameslevine/projects-api/issues/24).
@@ -860,6 +872,6 @@ then both show nothing.
   [#28](https://github.com/jameslevine/projects-api/issues/28).
 - No delete endpoint, so orphaned projects and reservations (disabled keys, restores) can only
   be cleaned up in DynamoDB directly: [#25](https://github.com/jameslevine/projects-api/issues/25).
-- Five of the seven alarms have no `ok_actions`, so recovery is not notified (section 6).
+- Five of the eight alarms have no `ok_actions`, so recovery is not notified (section 6).
 - API Gateway deployment rollback is normally impossible because Terraform destroys the
   replaced deployment (section 3).
