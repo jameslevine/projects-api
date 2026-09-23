@@ -333,6 +333,10 @@ Each request produces one `request completed` log line (`route`, `method`, `stat
 id as `correlation_id`. To follow a request in CloudWatch Logs Insights:
 `fields @timestamp, message, route, status | filter correlation_id = "<X-Request-Id>"`.
 
+To roll the `live` Lambda alias back to an earlier published version run `make rollback`
+(`ENV=prod ARGS="--version N --yes"`; add `--dry-run` to only print the command; see
+`scripts/rollback.sh --help`). The next `terraform apply` moves the alias forward again.
+
 ## Project layout
 
 ```text
