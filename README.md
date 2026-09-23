@@ -38,6 +38,7 @@ request flow). Decisions: [docs/adr/](docs/adr/).
 | [0002](docs/adr/0002-single-table-design.md) | DynamoDB single-table design with generic `PK`/`SK` and GSI1 |
 | [0003](docs/adr/0003-global-name-uniqueness.md) | Global, case-insensitive name uniqueness via a reservation item and a transaction |
 | [0004](docs/adr/0004-fastapi-mangum-on-lambda.md) | FastAPI + Mangum on a single Lambda function |
+| [0005](docs/adr/0005-per-type-provisioning.md) | Per-type provisioning (Proposed): shared runtimes for `web` and `mcp`, a dedicated queue, function and role per `agent` |
 
 ## Prerequisites
 
