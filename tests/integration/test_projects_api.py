@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from projects_api.api import deps
 from projects_api.config import Settings, get_settings
+from projects_api.domain.models import Project, ProjectType
 from projects_api.repositories.projects import ProjectRepository
 from tests.conftest import TABLE_NAME
 
@@ -104,6 +105,79 @@ def test_malformed_json_returns_400(client: TestClient) -> None:
     assert r.status_code == 400
 
 
+# -- GET /v1/projects/{projectId} ---------------------------------------------------
+
+
+def _create(client: TestClient, name: str, headers: dict[str, str]) -> dict[str, Any]:
+    r = client.post("/v1/projects", json={"name": name, "type": "agent"}, headers=headers)
+    assert r.status_code == 201, r.text
+    body: dict[str, Any] = r.json()
+    return body
+
+
+def _assert_not_found(r: Any) -> None:
+    assert r.status_code == 404, r.text
+    assert r.headers["content-type"].startswith("application/problem+json")
+    body = r.json()
+    assert body["status"] == 404
+    assert body["title"] == "Project not found"
+    assert body["type"].endswith("/project-not-found")
+
+
+def test_get_project_returns_200_for_owner_with_same_body_as_create(client: TestClient) -> None:
+    created = _create(client, "Readable", HEADERS)
+    r = client.get(f"/v1/projects/{created['projectId']}", headers=HEADERS)
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("application/json")
+    assert r.json() == created
+
+
+def test_get_project_returns_404_for_other_owner(client: TestClient) -> None:
+    created = _create(client, "Alice Only", HEADERS)
+    r = client.get(f"/v1/projects/{created['projectId']}", headers={"X-Api-Key-Id": "key-bob"})
+    _assert_not_found(r)
+    assert r.json()["instance"] == f"/v1/projects/{created['projectId']}"
+    # Still readable by the owner: the 404 above was about identity, not existence.
+    assert client.get(f"/v1/projects/{created['projectId']}", headers=HEADERS).status_code == 200
+
+
+def test_get_project_returns_404_for_unknown_well_formed_id(client: TestClient) -> None:
+    unknown = Project.new(
+        name="never stored", type_=ProjectType.AGENT, owner_id="key-alice"
+    ).project_id
+    _assert_not_found(client.get(f"/v1/projects/{unknown}", headers=HEADERS))
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "prj_doesnotexist",
+        "prj_" + "0" * 31,
+        "prj_" + "0" * 33,
+        "prj_" + "G" * 32,
+        "prj_" + "A" * 32,  # upper-case hex is not what Project.new produces
+        "0" * 32,
+        "usr_" + "0" * 32,
+        "not-an-id",
+    ],
+)
+def test_get_project_returns_404_not_400_for_malformed_id_without_touching_the_table(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, bad_id: str
+) -> None:
+    def _must_not_be_called(self: ProjectRepository, project_id: str) -> Project:
+        raise AssertionError(f"repository.get was called with {project_id!r}")
+
+    monkeypatch.setattr(ProjectRepository, "get", _must_not_be_called)
+    _assert_not_found(client.get(f"/v1/projects/{bad_id}", headers=HEADERS))
+
+
+def test_get_project_requires_identity(client: TestClient) -> None:
+    created = _create(client, "Needs Identity", HEADERS)
+    r = client.get(f"/v1/projects/{created['projectId']}")
+    assert r.status_code == 401
+    assert r.headers["content-type"].startswith("application/problem+json")
+
+
 # -- Lambda transport -------------------------------------------------------------
 
 
@@ -168,3 +242,24 @@ def test_lambda_handler_conflict_carries_request_id(client: TestClient) -> None:
     body = json.loads(resp["body"])
     assert body["requestId"] == "req-123"
     assert resp["headers"]["x-request-id"] == "req-123"
+
+
+def test_lambda_handler_get_project_returns_200_for_owner(client: TestClient) -> None:
+    from projects_api.main import handler
+
+    created = handler(
+        _apigw_event("POST", "/v1/projects", {"name": "get via lambda", "type": "web"}, "k-own"),
+        _Ctx(),
+    )
+    assert created["statusCode"] == 201, created
+    project = json.loads(created["body"])
+    path = f"/v1/projects/{project['projectId']}"
+
+    resp = handler(_apigw_event("GET", path, None, "k-own"), _Ctx())
+    assert resp["statusCode"] == 200, resp
+    assert json.loads(resp["body"]) == project
+
+    other = handler(_apigw_event("GET", path, None, "k-other"), _Ctx())
+    assert other["statusCode"] == 404, other
+    assert json.loads(other["body"])["title"] == "Project not found"
+    assert other["headers"]["content-type"].startswith("application/problem+json")
