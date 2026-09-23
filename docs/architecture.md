@@ -17,8 +17,11 @@ An observability module wires CloudWatch alarms, a dashboard, an SNS topic and a
 around the three runtime components. The code is in [`src/projects_api/`](../src/projects_api/),
 the infrastructure in [`infra/terraform/`](../infra/terraform/).
 
-Implemented endpoints: `GET /health` (public) and `POST /v1/projects` (key required). Read,
-list and delete endpoints are later slices (see [docs/PLAN.md](PLAN.md)).
+Implemented endpoints: `GET /health` (public); `POST /v1/projects`, `GET /v1/projects`
+(newest first, cursor pagination) and `GET /v1/projects/{projectId}` (key required; another
+owner's project is a 404). `DELETE /v1/projects/{projectId}` is planned
+([S4-401](tickets/S4-401-delete-project.md), [#25](https://github.com/jameslevine/projects-api/issues/25));
+see [docs/PLAN.md](PLAN.md).
 
 ## Component diagram
 
@@ -162,8 +165,11 @@ items carry no `GSI1PK`, so they never appear in the owner index (GSI1 is sparse
 ### GSI1: owner listing
 
 `GSI1PK = OWNER#<ownerId>` with `GSI1SK = PROJECT#<createdAt>#<projectId>` lets a `Query` return
-one owner's projects in creation order (or reverse) without scanning. The repository defines the
-key builders today; the `GET /v1/projects` route that queries it is S2-202.
+one owner's projects in creation order (or reverse) without scanning. `GET /v1/projects` queries
+it newest first (`ScanIndexForward = false`) with `begins_with(GSI1SK, "PROJECT#")` and returns
+DynamoDB's `LastEvaluatedKey` as an opaque, owner-scoped `nextToken`
+([`repositories/projects.py`](../src/projects_api/repositories/projects.py),
+[`api/pagination.py`](../src/projects_api/api/pagination.py)).
 
 ### Why partition by project id
 
@@ -231,7 +237,8 @@ build HTTP responses in repositories.
   AWS. Without either source the API returns 401.
 - **404, not 403.** A resource that exists but belongs to another key is reported as
   `project-not-found` (404), never 403, so callers cannot enumerate other owners' project ids.
-  The exception and mapping exist today; the first owner-scoped read is S2-201.
+  `GET /v1/projects/{projectId}` applies this, and also answers 404 (not 400) for malformed ids
+  without touching DynamoDB; a `nextToken` minted for another owner is rejected as invalid.
 - **Public route.** `GET /health` has `api_key_required = false` and returns version and status.
 
 ## Well-Architected pillars
@@ -283,7 +290,7 @@ Gaps:
 - DynamoDB uses the AWS-owned key; a customer-managed KMS key is a one-line change in the module
   but is not configured.
 - The `demo` API key is created by Terraform and should be disabled once real keys exist
-  (procedure will be in the runbook, [S3-303](tickets/S3-303-runbook.md)).
+  (procedure in the [runbook, section 4](runbook.md#4-api-key-lifecycle)).
 - Problem `type` URIs use the placeholder `https://projects-api.example/problems/`.
 
 ### Reliability
@@ -322,7 +329,6 @@ Gaps:
   deployed stage: [S1-108](tickets/S1-108-smoke-deployed-stage.md).
 - No production environment yet (stricter throttles, reserved concurrency, deletion protection
   on): [S4-404](tickets/S4-404-prod-environment.md).
-- Rollback is manual until the alias script lands: [S3-305](tickets/S3-305-rollback-script.md).
 - Single region (eu-west-2); no multi-region or backup-restore drill.
 
 ### Performance efficiency
@@ -356,8 +362,6 @@ Gaps:
 
 - No provisioned concurrency; cold-start behaviour has not been measured on a deployed stage
   ([S1-108](tickets/S1-108-smoke-deployed-stage.md) is the first opportunity).
-- Owner listing with cursor pagination (`Query` on GSI1, `ScanIndexForward=false`) is
-  [S2-202](tickets/S2-202-list-projects-pagination.md).
 - REST API adds more per-request latency than HTTP API; see
   [ADR 0001](adr/0001-rest-api-for-api-keys.md).
 
@@ -419,12 +423,17 @@ Implemented:
   errors/throttles/concurrency, business metrics (`ProjectsCreated`, `ProjectNameConflicts`,
   `ColdStart`) and DynamoDB capacity/errors; eight alarms with an SNS topic
   ([`modules/observability/main.tf`](../infra/terraform/modules/observability/main.tf)).
-- Request traceability: the API access log records `requestId` and `apiKeyId`; every problem
-  response carries `requestId` and an `X-Request-Id` header
-  ([`modules/api_gateway_rest/main.tf`](../infra/terraform/modules/api_gateway_rest/main.tf),
-  [`api/errors.py`](../src/projects_api/api/errors.py)).
-- One-command workflows in the [`Makefile`](../Makefile): `lint`, `test`, `build`, `tf-fmt`,
-  `tf-validate`, `tf-plan`, `tf-apply`, `smoke`, `local-db`, `run-local`.
+- Request traceability: every response carries the API Gateway request id as `X-Request-Id`
+  (problem bodies repeat it as `requestId`), the same id the access log records, and each
+  request produces one `request completed` log line with it as `correlation_id`
+  ([`api/context.py`](../src/projects_api/api/context.py),
+  [`modules/api_gateway_rest/main.tf`](../infra/terraform/modules/api_gateway_rest/main.tf)).
+- Operations runbook with deploy, rollback (`make rollback`), key lifecycle, request tracing,
+  alarm playbooks, PITR restore and a monthly cost review ([`docs/runbook.md`](runbook.md)).
+- Every alarm notifies both ALARM and OK transitions, so recovery reaches the same subscribers.
+- One-command workflows in the [`Makefile`](../Makefile): `lint`, `sh-lint`, `test`, `build`,
+  `tf-fmt`, `tf-validate`, `tf-lint`, `tf-scan`, `tf-plan`, `tf-apply`, `rollback`, `smoke`,
+  `local-db`, `run-local`.
 - Operator scripts: [`scripts/create_api_key.sh`](../scripts/create_api_key.sh) for onboarding
   and [`tests/smoke/smoke.sh`](../tests/smoke/smoke.sh) for post-deploy verification.
 - Repository conventions for humans and agents in [CLAUDE.md](../CLAUDE.md); tickets seeded from
@@ -432,13 +441,9 @@ Implemented:
 
 Gaps:
 
-- No runbook yet (alarm playbooks, key lifecycle, Logs Insights queries):
-  [S3-303](tickets/S3-303-runbook.md).
-- `requestId` today is the Lambda request id, not the API Gateway `requestContext.requestId`
-  that the access log records; aligning them and logging one line per request is
-  [S3-302](tickets/S3-302-correlation-ids.md).
-- Smoke against a real stage: [S1-108](tickets/S1-108-smoke-deployed-stage.md). Rollback
-  script: [S3-305](tickets/S3-305-rollback-script.md).
+- Smoke against a real stage: [S1-108](tickets/S1-108-smoke-deployed-stage.md).
+- `alarm_email` is unset in the committed `dev.tfvars`, so nobody is paged until an operator
+  sets it; prod makes it required ([S4-404](tickets/S4-404-prod-environment.md)).
 
 ### Sustainability
 

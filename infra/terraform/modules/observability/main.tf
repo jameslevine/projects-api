@@ -47,6 +47,7 @@ resource "aws_cloudwatch_metric_alarm" "lambda_throttles" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
   tags                = var.tags
 }
 
@@ -63,6 +64,7 @@ resource "aws_cloudwatch_metric_alarm" "lambda_duration_p99" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
   tags                = var.tags
 }
 
@@ -93,6 +95,7 @@ resource "aws_cloudwatch_metric_alarm" "api_4xx_ratio" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
   tags                = var.tags
 
   metric_query {
@@ -151,6 +154,7 @@ resource "aws_cloudwatch_metric_alarm" "ddb_system_errors" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
   tags                = var.tags
 
   metric_query {
@@ -185,6 +189,7 @@ resource "aws_cloudwatch_metric_alarm" "ddb_throttled" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
   tags                = var.tags
 
   metric_query {

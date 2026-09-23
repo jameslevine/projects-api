@@ -47,12 +47,14 @@ Console shortcuts (dev):
 
 Who gets paged: the SNS topic has an email subscription only if `alarm_email` is set in
 `infra/terraform/envs/<env>/<env>.tfvars`. In the committed `dev.tfvars` it is commented out, so
-by default **nobody is subscribed** and alarms only change state in the console. Check
-`aws sns list-subscriptions-by-topic --topic-arn <alarm_topic_arn>` if you are unsure.
+by default **nobody is subscribed** and alarms only change state in the console. Set it before
+relying on any alarm ([README, Deploy step 2](../README.md#deploy)) and confirm the subscription
+email. Check `aws sns list-subscriptions-by-topic --topic-arn <alarm_topic_arn>` if you are unsure.
+Every alarm sends both ALARM and OK transitions to the topic, so recovery is notified too.
 
 Useful Terraform outputs (`terraform -chdir=infra/terraform/envs/<env> output`): `api_url`,
 `demo_api_key_id`, `demo_api_key_value` (sensitive, use `-raw`), `usage_plan_id`, `table_name`,
-`lambda_function_name`, `dashboard_name`.
+`lambda_function_name`, `dashboard_name`, `waf_web_acl_arn` (null unless `enable_waf`).
 
 ## 2. Deploy
 
@@ -148,9 +150,10 @@ Caveats:
   `main` and a normal deploy (which publishes a new version containing the old code).
 - Environment variables (`TABLE_NAME`, `LOG_LEVEL`, ...) are baked into each version. Rolling
   back also rolls back configuration.
-- `scripts/rollback.sh [env] [version]` will wrap steps 1 to 3 with a confirmation and
-  `--dry-run` ([#24](https://github.com/jameslevine/projects-api/issues/24), **pending**, not yet
-  in the repository). Until it lands use the commands above.
+- `make rollback` (`scripts/rollback.sh`, see `scripts/rollback.sh --help`) wraps steps 1 to 3
+  with a confirmation prompt; `ENV=prod ARGS="--version N --yes"` selects the environment and
+  version, and `--dry-run` only prints the commands. The manual steps above remain the reference
+  for what it does.
 
 ### API Gateway: repoint the stage to an earlier deployment
 
@@ -829,9 +832,15 @@ storage.
 
 Everything the stack creates carries `Project=projects-api` (provider `default_tags` plus module
 tags; API keys created by `scripts/create_api_key.sh` are tagged too). The budget and Cost
-Explorer both filter on that tag, so **`Project` must be activated as a cost allocation tag** in
-Billing > Cost allocation tags once per account (takes up to 24 hours to take effect); until
-then both show nothing.
+Explorer both filter on that tag, so **`Project` must be activated as a cost allocation tag**
+once per account; until then both show nothing. The one-time command, its permissions and the
+up-to-24-hour delay are documented in [README, Deploy step 6](../README.md#deploy); to check
+whether it has been done:
+
+```bash
+aws ce list-cost-allocation-tags --tag-keys Project --type UserDefined
+# "Status": "Active" is what you want; "Inactive" means run the README step.
+```
 
 - [ ] Cost Explorer, last full month, filter Tag `Project = projects-api`, group by Service:
 
@@ -868,7 +877,7 @@ then both show nothing.
   projects-api-dev-`); disable keys that no longer have an owner (section 4).
 - [ ] Unused published Lambda versions: they cost nothing while total stored code is small, but
   `list-versions-by-function` growing past a few dozen is a sign that clean-up should be added
-  to the rollback script (#24).
+  to `scripts/rollback.sh`.
 
 ## 9. Known limitations and open items
 
@@ -880,13 +889,12 @@ then both show nothing.
 - The DynamoDB system-errors alarm covers only the operations in `ddb_operations` (section 6);
   GSI1 throttling is visible in the console but has no alarm. Both came out of the alarm review
   in [#20](https://github.com/jameslevine/projects-api/issues/20) (closed).
-- No WAF in front of the API; the gateway's own throttling and key check are the only
-  protection against scanning: [#23](https://github.com/jameslevine/projects-api/issues/23).
-- No rollback script; the alias is repointed by hand (section 3): [#24](https://github.com/jameslevine/projects-api/issues/24).
+- WAF is optional and off by default (`enable_waf`, [#23](https://github.com/jameslevine/projects-api/issues/23),
+  closed); without it the gateway's own throttling and key check are the only protection
+  against scanning.
 - No production environment; `dev` has deletion protection off and no alarm email by default:
   [#28](https://github.com/jameslevine/projects-api/issues/28).
 - No delete endpoint, so orphaned projects and reservations (disabled keys, restores) can only
   be cleaned up in DynamoDB directly: [#25](https://github.com/jameslevine/projects-api/issues/25).
-- Five of the eight alarms have no `ok_actions`, so recovery is not notified (section 6).
 - API Gateway deployment rollback is normally impossible because Terraform destroys the
   replaced deployment (section 3).

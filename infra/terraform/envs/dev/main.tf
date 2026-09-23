@@ -22,7 +22,9 @@ module "lambda" {
   table_name  = module.table.name
   table_arn   = module.table.arn
   memory_mb   = var.lambda_memory_mb
-  tags        = local.tags
+
+  log_retention_days = var.log_retention_days
+  tags               = local.tags
 }
 
 module "api" {
@@ -33,6 +35,7 @@ module "api" {
   lambda_function_name           = module.lambda.function_name
   lambda_alias_name              = module.lambda.alias_name
   manage_account_cloudwatch_role = var.manage_account_cloudwatch_role
+  log_retention_days             = var.log_retention_days
   tags                           = local.tags
 }
 
@@ -56,5 +59,7 @@ module "waf" {
   name       = local.name
   stage_arn  = module.api.stage_arn
   rate_limit = var.waf_rate_limit
-  tags       = local.tags
+
+  log_retention_days = var.log_retention_days
+  tags               = local.tags
 }

@@ -247,8 +247,9 @@ Everything is Terraform under `infra/terraform/`; the `dev` environment is in
    # edit backend.hcl: set bucket to the STATE_BUCKET name above
    ```
 
-   Optionally set `alarm_email` in `infra/terraform/envs/dev/dev.tfvars` to receive alarm and
-   budget notifications.
+   Set `alarm_email` in `infra/terraform/envs/dev/dev.tfvars` if anyone relies on this
+   environment: it is the only subscriber of the alarm SNS topic, so **without it no alarm or
+   budget notification reaches a human**. Confirm the subscription email AWS sends after apply.
 
 3. Initialise, plan and apply. `tf-plan` builds the zip first and saves the plan to `tfplan`;
    `tf-apply` applies exactly that saved plan.
@@ -283,6 +284,17 @@ Everything is Terraform under `infra/terraform/`; the `dev` environment is in
    Without a valid key the gateway answers `403` as problem+json before the request reaches
    Lambda. The default usage plan allows 10 requests/second (burst 20) and 10,000 requests per
    month per key; the stage is capped at 50 requests/second (burst 100).
+
+6. One-off, per account: activate `Project` as a cost allocation tag. The monthly budget's
+   `cost_filter` and the Cost Explorer queries in the
+   [runbook cost review](docs/runbook.md#8-monthly-cost-review-checklist) filter on it and show
+   nothing until this is done. It needs billing permissions (`ce:UpdateCostAllocationTagsStatus`)
+   and takes up to 24 hours to take effect.
+
+   ```bash
+   aws ce update-cost-allocation-tags-status \
+     --cost-allocation-tags-status TagKey=Project,Status=Active
+   ```
 
 `make tf-fmt tf-validate` checks formatting and validates both `bootstrap` and `envs/dev` without
 credentials (CI runs the same). Do not run `terraform apply` or mutating `aws` commands unless you
@@ -324,7 +336,7 @@ DynamoDB capacity and errors), eight alarms (Lambda errors, throttles and p99 du
 4XX ratio and p99 latency; DynamoDB system errors and throttle events) fanning out to the SNS topic
 `projects-api-<env>-alarms`, and a monthly cost budget; set `alarm_email` to subscribe.
 Lambda logs are in `/aws/lambda/projects-api-<env>` and gateway access logs in
-`/aws/apigateway/projects-api-<env>/access`, both 14-day retention.
+`/aws/apigateway/projects-api-<env>/access`, both `log_retention_days` (default 14) retention.
 
 Every response carries an `X-Request-Id` header (the API Gateway request id in AWS, so it also
 appears in the gateway access log; a UUID locally) and problem bodies repeat it as `requestId`.
@@ -342,8 +354,9 @@ ACL in front of the stage (AWS managed Common and Known Bad Inputs rule groups p
 limit, `waf_rate_limit`, default 2000 requests per five minutes). It is off by default because it
 costs about USD 5 per web ACL, USD 1 per rule and USD 0.60 per million requests a month. WAF logs
 go to `aws-waf-logs-projects-api-<env>` with the `x-api-key` header redacted. CI lints the
-Terraform with `tflint` and scans it with `checkov` (`make tf-lint`, `make tf-scan`); accepted
-findings are listed with a reason each in [`.checkov.yaml`](.checkov.yaml).
+Terraform with `tflint` and scans it with `checkov` (`make tf-lint`, `make tf-scan`), and the shell
+scripts with `shellcheck` (`make sh-lint`); accepted checkov findings are listed with a reason each
+in [`.checkov.yaml`](.checkov.yaml).
 
 ## Project layout
 
