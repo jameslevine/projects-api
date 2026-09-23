@@ -2,7 +2,7 @@
 ENV ?= dev
 TF_DIR := infra/terraform/envs/$(ENV)
 
-.PHONY: help install lint format test cov run-local local-db build tf-fmt tf-validate tf-init tf-plan tf-apply tf-bootstrap smoke clean
+.PHONY: help install lint format test cov run-local local-db build tf-fmt tf-validate tf-init tf-plan tf-apply tf-bootstrap smoke rollback clean
 
 help: ## Show targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -58,6 +58,9 @@ tf-apply: ## terraform apply the saved plan for ENV
 
 smoke: ## Smoke test the deployed ENV
 	ENV=$(ENV) tests/smoke/smoke.sh
+
+rollback: ## Repoint the live Lambda alias to an earlier version (ARGS="--version N --yes --dry-run")
+	ENV=$(ENV) scripts/rollback.sh --env $(ENV) $(ARGS)
 
 clean: ## Remove build artefacts
 	rm -rf build .pytest_cache .ruff_cache .mypy_cache .coverage
