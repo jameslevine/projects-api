@@ -5,7 +5,7 @@ description = "Projects API: create and manage projects that host agents, MCP se
 authors = [{ name = "James Levine", email = "jamesalexanderlevine@gmail.com" }]
 requires-python = ">=3.12,<3.13"
 dependencies = [
-  "fastapi>=0.115",
+  "fastapi>=0.141",
   "mangum>=0.19",
   "boto3>=1.35",
   "pydantic>=2.9",
