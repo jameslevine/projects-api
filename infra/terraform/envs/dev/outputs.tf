@@ -25,6 +25,15 @@ output "lambda_function_name" {
   value = module.stack.lambda_function_name
 }
 
+output "provisioner_function_name" {
+  value = module.stack.provisioner_function_name
+}
+
+output "provisioner_dlq_url" {
+  description = "DLQ for provisioner batches that exhausted their retries."
+  value       = module.stack.provisioner_dlq_url
+}
+
 output "dashboard_name" {
   value = module.stack.dashboard_name
 }

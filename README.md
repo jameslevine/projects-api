@@ -5,8 +5,10 @@ application. A caller authenticates with a per-user API key, posts a name and a 
 back a project record; names are globally unique (case-insensitive) so they can later become
 hostnames. The service is a FastAPI application running on AWS Lambda (arm64) behind an API
 Gateway REST API with API keys and usage plans, storing everything in one DynamoDB table, with
-all infrastructure defined in Terraform. Today the API creates the record only; provisioning the
-hosted resource is a later slice.
+all infrastructure defined in Terraform. Creating a record also triggers an asynchronous
+provisioning pipeline (DynamoDB Streams to a provisioner Lambda) that moves the project from
+`CREATED` through `PROVISIONING` to `READY` or `FAILED`; the per-type provisioners are
+placeholders for the designs in [ADR 0005](docs/adr/0005-per-type-provisioning.md).
 
 ## Architecture
 
@@ -28,6 +30,12 @@ Client --(x-api-key)--> API Gateway REST (stage "live": usage plan, throttling, 
   the gateway itself (missing key, throttling).
 - A project is two items written in one `TransactWriteItems`: the record `PROJECT#<id>/META` and
   the uniqueness reservation `NAME#<nameKey>/RESERVATION`.
+- Provisioning is asynchronous: the table stream feeds a second Lambda
+  (`projects-api-<env>-provisioner`, same zip, handler `projects_provisioner.handler.handler`)
+  through an event source mapping filtered to `INSERT` of `PROJECT` items (batch 10, bisect on
+  error, 3 retries, SQS dead-letter queue with a depth alarm). It moves each new project
+  `CREATED -> PROVISIONING -> READY` (or `FAILED` with `failureReason`) with conditional
+  `UpdateItem`s, so replays are idempotent.
 
 Full write-up: [docs/architecture.md](docs/architecture.md) (Well-Architected mapping, data model,
 request flow). Decisions: [docs/adr/](docs/adr/).
@@ -180,8 +188,10 @@ Base URL: `http://localhost:8080` locally, or the `api_url` Terraform output (wh
 | `DELETE` | `/v1/projects/{projectId}` | API key | none | `204` no body, project and name reservation removed together; `404` when the id is malformed, unknown or belongs to another key (nothing is removed); `401` no identity (local only); `403` missing or invalid key (gateway); `429` throttled (gateway) |
 
 Project record fields: `projectId` (`prj_` + 32 hex), `name`, `type`, `status` (`CREATED`,
-`PROVISIONING`, `READY` or `FAILED`; always `CREATED` today), `ownerId`, `createdAt`,
-`updatedAt` (ISO 8601 UTC, second precision).
+`PROVISIONING`, `READY` or `FAILED`: a new project is `CREATED` and the provisioner moves it to
+`READY`, or `FAILED`, within seconds), `ownerId`, `createdAt`, `updatedAt` (ISO 8601 UTC, second
+precision). The provisioner also stores `failureReason` and, later, `endpoint` on the record;
+the API does not return them yet.
 
 Resources owned by another key return `404`, never `403`, so project ids cannot be enumerated.
 `DELETE` removes the project record and its name reservation in one transaction, so the name can
@@ -414,6 +424,9 @@ src/projects_api/
   domain/models.py      Pydantic models (camelCase aliases on the wire)
   domain/exceptions.py  *Error classes raised by repositories/services
   repositories/*.py     DynamoDB access via boto3 client; no HTTP concepts
+src/projects_provisioner/
+  handler.py            stream consumer: CREATED -> PROVISIONING -> READY | FAILED
+  provisioners.py       Provisioner protocol + per-type placeholder implementations
 tests/unit, tests/integration (TestClient + moto), tests/smoke (deployed stage)
 infra/terraform/{bootstrap,modules/*,envs/*}
 docs/{PLAN.md,architecture.md,adr/,runbook.md,tickets/}

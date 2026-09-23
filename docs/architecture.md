@@ -51,8 +51,15 @@ flowchart LR
         table["Single table PK/SK, GSI1, on-demand, PITR"]
     end
 
+    subgraph prov["Provisioning pipeline: lambda_provisioner module"]
+        stream["DynamoDB stream NEW_AND_OLD_IMAGES"]
+        esm["Event source mapping: INSERT of PROJECT items, batch 10, bisect, 3 retries"]
+        provisioner["Lambda projects-api-env-provisioner: CREATED to PROVISIONING to READY or FAILED"]
+        dlq["SQS dead-letter queue, SSE, 14 days"]
+    end
+
     subgraph obs["Observability module"]
-        alarms["8 CloudWatch alarms"]
+        alarms["8 CloudWatch alarms, plus 2 in the provisioner module"]
         dash["CloudWatch dashboard"]
         budget["AWS Budget, monthly"]
         sns["SNS topic alarms, optional email"]
@@ -71,6 +78,14 @@ flowchart LR
     repo --> table
     app -.-> powertools
     powertools -.-> telemetry
+    table --> stream
+    stream --> esm
+    esm --> provisioner
+    provisioner --> table
+    esm -.-> dlq
+    provisioner -.-> powertools
+    dlq -.-> alarms
+    provisioner -.-> alarms
     alarms --> sns
     budget --> sns
     apigw -.-> alarms
@@ -80,10 +95,11 @@ flowchart LR
 
 Terraform wiring for the diagram is in [`infra/terraform/modules/stack/main.tf`](../infra/terraform/modules/stack/main.tf),
 called once by each environment root under `infra/terraform/envs/<env>` (see
-[Environments](#environments)); it composes four modules: [`dynamodb_table`](../infra/terraform/modules/dynamodb_table/main.tf),
+[Environments](#environments)); it composes five modules: [`dynamodb_table`](../infra/terraform/modules/dynamodb_table/main.tf),
 [`lambda_api`](../infra/terraform/modules/lambda_api/main.tf),
-[`api_gateway_rest`](../infra/terraform/modules/api_gateway_rest/main.tf) and
-[`observability`](../infra/terraform/modules/observability/main.tf). Remote state (S3 bucket
+[`api_gateway_rest`](../infra/terraform/modules/api_gateway_rest/main.tf),
+[`observability`](../infra/terraform/modules/observability/main.tf) and
+[`lambda_provisioner`](../infra/terraform/modules/lambda_provisioner/main.tf). Remote state (S3 bucket
 plus DynamoDB lock table) is created once by [`infra/terraform/bootstrap/main.tf`](../infra/terraform/bootstrap/main.tf).
 
 ## Request flow: `POST /v1/projects`
@@ -144,6 +160,70 @@ is 204 with no body and emits `ProjectsDeleted`; a lost race on the record condi
 while a reservation that no longer points at the project is logged at error and surfaces as a
 500 rather than a silent success ([ADR 0003](adr/0003-global-name-uniqueness.md)).
 
+## Provisioning flow: stream to provisioner
+
+Creating a project only writes the record. Provisioning the hosted resource happens
+asynchronously, driven by the table's DynamoDB stream, so the API stays fast and a slow or
+failing provisioner never affects `POST /v1/projects`.
+
+```mermaid
+sequenceDiagram
+    participant API as API Lambda
+    participant T as DynamoDB table
+    participant S as Stream + event source mapping
+    participant P as Provisioner Lambda
+    participant Q as SQS DLQ
+    API->>T: TransactWriteItems (PROJECT status=CREATED)
+    T-->>S: INSERT record (NewImage)
+    S->>P: batch of up to 10 records (filter: INSERT, entity=PROJECT)
+    P->>T: UpdateItem CREATED to PROVISIONING (condition status=CREATED)
+    alt condition failed
+        P-->>S: skip (already handled)
+    else
+        P->>P: PROVISIONERS[type].provision(...)
+        alt provisioner succeeded
+            P->>T: UpdateItem PROVISIONING to READY (+endpoint)
+        else provisioner raised
+            P->>T: UpdateItem PROVISIONING to FAILED (+failureReason)
+        end
+        P-->>S: batchItemFailures: [] (record processed)
+    end
+    Note over P,S: A DynamoDB error propagates: the record is reported in batchItemFailures,<br/>retried (bisecting the batch), then sent to the DLQ after 3 attempts
+    S-->>Q: exhausted batch (on_failure destination)
+```
+
+1. **Stream.** The table has `stream_enabled = true` with `NEW_AND_OLD_IMAGES`
+   ([`modules/dynamodb_table/main.tf`](../infra/terraform/modules/dynamodb_table/main.tf),
+   [`modules/stack/main.tf`](../infra/terraform/modules/stack/main.tf), so both environments).
+2. **Event source mapping.** [`modules/lambda_provisioner/main.tf`](../infra/terraform/modules/lambda_provisioner/main.tf)
+   subscribes the provisioner function from `LATEST` with `batch_size = 10`, a 5 second batching
+   window, `bisect_batch_on_function_error`, `maximum_retry_attempts = 3`,
+   `ReportBatchItemFailures` and an SQS dead-letter queue as the on-failure destination. A
+   `filter_criteria` pattern (`eventName = INSERT`, `NewImage.entity.S = PROJECT`) drops
+   reservation items and updates before they are billed as invocations.
+3. **Handler.** [`projects_provisioner/handler.py`](../src/projects_provisioner/handler.py) uses
+   Powertools `BatchProcessor(EventType.DynamoDBStreams)` with `process_partial_response`. Per
+   record it deserialises `NewImage` with `TypeDeserializer`, skips anything that is not an
+   `INSERT` of a `PROJECT` in status `CREATED`, then performs conditional `UpdateItem`s:
+   `CREATED -> PROVISIONING` (`ConditionExpression #s = :expected`; a failed condition means a
+   replay or a concurrent invocation already handled it, so the record is skipped: idempotent),
+   the provisioner call, and `PROVISIONING -> READY` (with `endpoint` when returned) or
+   `PROVISIONING -> FAILED` with `failureReason` (truncated to 500 characters).
+4. **Provisioners.** [`projects_provisioner/provisioners.py`](../src/projects_provisioner/provisioners.py)
+   defines the `Provisioner` protocol (`provision(ProvisionRequest) -> ProvisionResult`) and a
+   registry keyed by `ProjectType`. The three implementations are placeholders that succeed
+   without creating anything; the per-type designs they will implement are in
+   [ADR 0005](adr/0005-per-type-provisioning.md).
+5. **Failure semantics.** A provisioner exception is terminal for that project (FAILED, record
+   counted as processed, `ProjectsProvisioningFailed` metric); a DynamoDB error propagates so the
+   record lands in `batchItemFailures` and is retried, then dead-lettered. Two alarms in the
+   module notify the shared SNS topic: DLQ `ApproximateNumberOfMessagesVisible >= 1` and
+   provisioner `Errors >= 1`.
+6. **Shared code, one zip.** The provisioner reuses `Settings`, the Powertools singletons,
+   `ProjectStatus`/`ProjectType` and the key helpers from `projects_api`; both packages are
+   copied into `build/lambda.zip` by [`scripts/build_lambda.sh`](../scripts/build_lambda.sh) and
+   the two functions differ only in their handler string.
+
 ## Data model
 
 One DynamoDB table per environment (`projects-api-<env>`), defined in
@@ -158,13 +238,13 @@ for tests in [`tests/conftest.py`](../tests/conftest.py) and for local runs in
 | Billing | `PAY_PER_REQUEST` (on-demand) |
 | Durability | Point-in-time recovery enabled; deletion protection off in `dev`, on in `prod` (stack variable `deletion_protection`) |
 | Encryption | Server-side encryption with the AWS-owned key |
-| Streams | Off by default (`stream_enabled` variable, reserved for the S4 provisioning pipeline) |
+| Streams | `stream_enabled = true` in dev with `NEW_AND_OLD_IMAGES`; consumed by the provisioner (see [Provisioning flow](#provisioning-flow-stream-to-provisioner)) |
 
 ### Item types
 
 | Item | `PK` | `SK` | Attributes |
 |---|---|---|---|
-| Project record | `PROJECT#<projectId>` | `META` | `entity=PROJECT`, `projectId`, `name` (display form), `nameKey` (lower-cased), `type`, `status`, `ownerId`, `createdAt`, `updatedAt`, `GSI1PK=OWNER#<ownerId>`, `GSI1SK=PROJECT#<createdAt>#<projectId>` |
+| Project record | `PROJECT#<projectId>` | `META` | `entity=PROJECT`, `projectId`, `name` (display form), `nameKey` (lower-cased), `type`, `status`, `ownerId`, `createdAt`, `updatedAt`, `GSI1PK=OWNER#<ownerId>`, `GSI1SK=PROJECT#<createdAt>#<projectId>`; set by the provisioner: `endpoint` (optional, when READY), `failureReason` (when FAILED) |
 | Name reservation | `NAME#<nameKey>` | `RESERVATION` | `entity=NAME_RESERVATION`, `projectId`, `ownerId`, `createdAt` |
 
 `nameKey` is `normalise_name(name).lower()` ([`domain/validation.py`](../src/projects_api/domain/validation.py)),
@@ -325,6 +405,12 @@ Implemented:
 - Alarms on Lambda errors, throttles and p99 duration; API 5XX, 4XX ratio and p99 latency;
   DynamoDB system errors (summed across operations) and read/write throttle events, all routed
   to SNS ([`modules/observability/main.tf`](../infra/terraform/modules/observability/main.tf)).
+- Provisioning is decoupled from the request path and self-healing at the batch level:
+  conditional status transitions make replays idempotent, `ReportBatchItemFailures` with
+  `bisect_batch_on_function_error` isolates a bad record, three retries then an SQS DLQ keep
+  the stream moving, and the DLQ depth is alarmed
+  ([`modules/lambda_provisioner/main.tf`](../infra/terraform/modules/lambda_provisioner/main.tf),
+  [`projects_provisioner/handler.py`](../src/projects_provisioner/handler.py)).
 - API deployment uses `create_before_destroy` and a content-hash trigger so stage updates do not
   leave a gap ([`modules/api_gateway_rest/main.tf`](../infra/terraform/modules/api_gateway_rest/main.tf)).
 - Remote state with S3 versioning and a DynamoDB lock table
@@ -421,14 +507,18 @@ Implemented:
   ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)).
 - Structured logging, tracing and metrics via Powertools: `inject_lambda_context`,
   `capture_lambda_handler`, `log_metrics` with the cold-start metric, and the business metrics
-  `ProjectsCreated` and `ProjectNameConflicts` ([`main.py`](../src/projects_api/main.py),
+  `ProjectsCreated`, `ProjectNameConflicts`, `ProjectsProvisioned` and
+  `ProjectsProvisioningFailed` ([`main.py`](../src/projects_api/main.py),
+  [`projects_provisioner/handler.py`](../src/projects_provisioner/handler.py),
   [`observability.py`](../src/projects_api/observability.py),
   [`api/routes/projects.py`](../src/projects_api/api/routes/projects.py),
   [`api/errors.py`](../src/projects_api/api/errors.py)).
 - A CloudWatch dashboard with API requests/errors, API latency p50/p99, Lambda invocations/
   errors/throttles/concurrency, business metrics (`ProjectsCreated`, `ProjectNameConflicts`,
   `ColdStart`) and DynamoDB capacity/errors; eight alarms with an SNS topic
-  ([`modules/observability/main.tf`](../infra/terraform/modules/observability/main.tf)).
+  ([`modules/observability/main.tf`](../infra/terraform/modules/observability/main.tf)), plus
+  the provisioner module's DLQ-depth and function-error alarms on the same topic
+  ([`modules/lambda_provisioner/main.tf`](../infra/terraform/modules/lambda_provisioner/main.tf)).
 - Request traceability: every response carries the API Gateway request id as `X-Request-Id`
   (problem bodies repeat it as `requestId`), the same id the access log records, and each
   request produces one `request completed` log line with it as `correlation_id`

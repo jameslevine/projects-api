@@ -33,7 +33,8 @@ Region: **eu-west-2** (London). Everything is tagged `Project=projects-api`,
 | Lambda function | `projects-api-<env>`, alias `live`, 512 MB, 10 s timeout, concurrency unreserved / reserved 50 | `infra/terraform/modules/lambda_api` |
 | Lambda log group | `/aws/lambda/projects-api-<env>` (retention 14 / 30 days) | same |
 | Lambda IAM role | `projects-api-<env>-role` (DynamoDB actions on the table ARN and its indexes only) | same |
-| DynamoDB table | `projects-api-<env>`, on-demand, PITR on, GSI `GSI1`, deletion protection off / on | `infra/terraform/modules/dynamodb_table` |
+| DynamoDB table | `projects-api-<env>`, on-demand, PITR on, GSI `GSI1`, stream `NEW_AND_OLD_IMAGES`, deletion protection off / on | `infra/terraform/modules/dynamodb_table` |
+| Provisioner | Lambda `projects-api-<env>-provisioner` (stream consumer: batch 10, bisect on error, 3 retries), DLQ `projects-api-<env>-provisioner-dlq`, alarms `projects-api-<env>-provisioner-dlq-messages` and `-provisioner-lambda-errors`, log group `/aws/lambda/projects-api-<env>-provisioner` | `infra/terraform/modules/lambda_provisioner` |
 | Dashboard | `projects-api-<env>` | `infra/terraform/modules/observability` |
 | Alarm topic | SNS `projects-api-<env>-alarms` | same |
 | Budget | `projects-api-<env>-monthly` (USD 20 / USD 100) | same |

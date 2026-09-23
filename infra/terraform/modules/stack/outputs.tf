@@ -48,6 +48,23 @@ output "lambda_log_group_name" {
   value = module.lambda.log_group_name
 }
 
+output "provisioner_function_name" {
+  value = module.provisioner.function_name
+}
+
+output "provisioner_dlq_url" {
+  description = "DLQ for provisioner batches that exhausted their retries."
+  value       = module.provisioner.dlq_url
+}
+
+output "provisioner_dlq_arn" {
+  value = module.provisioner.dlq_arn
+}
+
+output "provisioner_log_group_name" {
+  value = module.provisioner.log_group_name
+}
+
 output "dashboard_name" {
   value = module.observability.dashboard_name
 }

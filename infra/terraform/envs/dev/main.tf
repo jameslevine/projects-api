@@ -53,6 +53,11 @@ moved {
 }
 
 moved {
+  from = module.provisioner
+  to   = module.stack.module.provisioner
+}
+
+moved {
   from = module.waf
   to   = module.stack.module.waf
 }
