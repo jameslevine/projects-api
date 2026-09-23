@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     Locally, they can be set via the shell or a `.env` file.
     """
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", frozen=True)
 
     env: Literal["local", "dev", "prod"] = "local"
     service_name: str = "projects-api"

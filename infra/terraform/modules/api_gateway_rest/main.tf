@@ -8,7 +8,8 @@ resource "aws_api_gateway_rest_api" "this" {
     types = ["REGIONAL"]
   }
 
-  # Reject oversized/undeclared payloads at the edge.
+  # -1 disables response compression (payloads are tiny JSON). API Gateway enforces its
+  # own 10 MB request limit; body validation is done by FastAPI/Pydantic.
   minimum_compression_size = -1
   tags                     = var.tags
 }
