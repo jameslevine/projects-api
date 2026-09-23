@@ -1,3 +1,6 @@
+# Development environment. Defaults here are the dev values; dev.tfvars restates the ones an
+# operator is most likely to change. Prod has its own root with stricter defaults.
+
 variable "aws_region" {
   type    = string
   default = "eu-west-2"
@@ -17,6 +20,18 @@ variable "lambda_zip_path" {
 variable "lambda_memory_mb" {
   type    = number
   default = 512
+}
+
+variable "lambda_reserved_concurrency" {
+  description = "Reserved concurrency for the API function; -1 leaves dev unreserved."
+  type        = number
+  default     = -1
+}
+
+variable "logger_sample_rate" {
+  description = "POWERTOOLS_LOGGER_SAMPLE_RATE. null lets the stack pick the environment default (1 for dev)."
+  type        = string
+  default     = null
 }
 
 variable "alarm_email" {
@@ -61,4 +76,38 @@ variable "waf_rate_limit" {
   description = "Requests per source IP per five minutes before WAF blocks it (when enable_waf)."
   type        = number
   default     = 2000
+}
+
+variable "stage_throttle_rate" {
+  description = "Stage-wide steady-state requests per second."
+  type        = number
+  default     = 50
+}
+
+variable "stage_throttle_burst" {
+  type    = number
+  default = 100
+}
+
+variable "key_throttle_rate" {
+  description = "Per-API-key steady-state requests per second."
+  type        = number
+  default     = 10
+}
+
+variable "key_throttle_burst" {
+  type    = number
+  default = 20
+}
+
+variable "key_monthly_quota" {
+  description = "Requests per API key per calendar month."
+  type        = number
+  default     = 10000
+}
+
+variable "deletion_protection" {
+  description = "DynamoDB deletion protection. Off in dev so the table can be torn down; null would pick the environment default."
+  type        = bool
+  default     = false
 }

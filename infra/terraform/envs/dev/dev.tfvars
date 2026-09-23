@@ -6,3 +6,5 @@ monthly_budget_usd = 20
 # enable_waf       = true
 # waf_rate_limit   = 2000
 # log_retention_days = 14
+# lambda_reserved_concurrency = -1   # unreserved in dev; prod caps it
+# deletion_protection = false        # dev tables can be destroyed; prod sets true

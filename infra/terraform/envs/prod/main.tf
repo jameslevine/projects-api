@@ -29,30 +29,3 @@ module "stack" {
   deletion_protection            = var.deletion_protection
   manage_account_cloudwatch_role = var.manage_account_cloudwatch_role
 }
-
-# The wiring moved from this root into modules/stack (S4-404). These keep existing state
-# addresses valid so a plan after the refactor shows moves, not replacements.
-moved {
-  from = module.table
-  to   = module.stack.module.table
-}
-
-moved {
-  from = module.lambda
-  to   = module.stack.module.lambda
-}
-
-moved {
-  from = module.api
-  to   = module.stack.module.api
-}
-
-moved {
-  from = module.observability
-  to   = module.stack.module.observability
-}
-
-moved {
-  from = module.waf
-  to   = module.stack.module.waf
-}

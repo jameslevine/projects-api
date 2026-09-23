@@ -1,8 +1,10 @@
 # Projects API: operations runbook
 
 For the on-call engineer. Everything here describes what the repository deploys today; work
-that is still open is linked by issue number in section 9. Names use `<env>`; the only environment that exists is `dev`
-(`projects-api-dev`). Production is [#28](https://github.com/jameslevine/projects-api/issues/28).
+that is still open is linked by issue number in section 9. Names use `<env>`: the environments
+are `dev` (`projects-api-dev`) and `prod` (`projects-api-prod`), each a root under
+`infra/terraform/envs/<env>` that calls the shared `modules/stack` module, so every name below
+applies to both. Where a value differs it is written `dev / prod`.
 
 Companion documents: [architecture.md](architecture.md) (components, data model, request flow),
 [adr/](adr/) (decisions), the [README](../README.md) (commands and API reference).
@@ -24,21 +26,23 @@ Region: **eu-west-2** (London). Everything is tagged `Project=projects-api`,
 | Component | Name / location | Defined in |
 |---|---|---|
 | REST API | `projects-api-<env>`, regional, stage `live` | `infra/terraform/modules/api_gateway_rest` |
-| Usage plan | `projects-api-<env>-default` (10 req/s, burst 20, 10,000 req/month per key) | same |
+| Usage plan | `projects-api-<env>-default` (per key: 10 req/s, burst 20, 10,000 req/month / 5 req/s, burst 10, 50,000 req/month) | same |
 | Demo API key | `projects-api-<env>-demo` (created by Terraform) | same |
-| Stage throttle | 50 req/s, burst 100 | same |
-| Access log group | `/aws/apigateway/projects-api-<env>/access` (JSON, 14-day retention) | same |
-| Lambda function | `projects-api-<env>`, alias `live`, 512 MB, 10 s timeout, unreserved concurrency | `infra/terraform/modules/lambda_api` |
-| Lambda log group | `/aws/lambda/projects-api-<env>` (14-day retention) | same |
+| Stage throttle | 50 req/s, burst 100 / 20 req/s, burst 40 | same |
+| Access log group | `/aws/apigateway/projects-api-<env>/access` (JSON; retention 14 / 30 days) | same |
+| Lambda function | `projects-api-<env>`, alias `live`, 512 MB, 10 s timeout, concurrency unreserved / reserved 50 | `infra/terraform/modules/lambda_api` |
+| Lambda log group | `/aws/lambda/projects-api-<env>` (retention 14 / 30 days) | same |
 | Lambda IAM role | `projects-api-<env>-role` (DynamoDB actions on the table ARN and its indexes only) | same |
-| DynamoDB table | `projects-api-<env>`, on-demand, PITR on, GSI `GSI1`, deletion protection only when `<env>` is `prod` | `infra/terraform/modules/dynamodb_table` |
+| DynamoDB table | `projects-api-<env>`, on-demand, PITR on, GSI `GSI1`, deletion protection off / on | `infra/terraform/modules/dynamodb_table` |
 | Dashboard | `projects-api-<env>` | `infra/terraform/modules/observability` |
 | Alarm topic | SNS `projects-api-<env>-alarms` | same |
-| Budget | `projects-api-<env>-monthly` (default USD 20) | same |
+| Budget | `projects-api-<env>-monthly` (USD 20 / USD 100) | same |
+| WAF web ACL | `projects-api-<env>-web-acl` with log group `aws-waf-logs-projects-api-<env>`; off in dev unless `enable_waf`, always on in prod | `infra/terraform/modules/waf` |
 | Custom metrics | CloudWatch namespace `ProjectsApi`: `ProjectsCreated` and `ProjectNameConflicts` (dimension `service=projects-api`), `ColdStart` (dimensions `function_name=projects-api-<env>` and `service=projects-api`) | `src/projects_api/observability.py`, `api/routes/projects.py`, `api/errors.py` |
 | Terraform state | S3 bucket from `infra/terraform/bootstrap`, key `projects-api/<env>/terraform.tfstate`, lock table `projects-api-terraform-locks` | `infra/terraform/envs/<env>/backend.hcl` (not committed) |
+| Environment roots | `infra/terraform/envs/dev`, `infra/terraform/envs/prod`: `variables.tf` (defaults), `<env>.tfvars`, `main.tf` calling `module "stack"` | `infra/terraform/modules/stack` |
 
-Console shortcuts (dev):
+Console shortcuts (dev; replace `projects-api-dev` with `projects-api-prod` for production):
 
 - Dashboard: `https://eu-west-2.console.aws.amazon.com/cloudwatch/home?region=eu-west-2#dashboards:name=projects-api-dev`
 - Alarms: `https://eu-west-2.console.aws.amazon.com/cloudwatch/home?region=eu-west-2#alarmsV2:?~(search~'projects-api-dev)`
@@ -49,7 +53,8 @@ Who gets paged: the SNS topic has an email subscription only if `alarm_email` is
 `infra/terraform/envs/<env>/<env>.tfvars`. In the committed `dev.tfvars` it is commented out, so
 by default **nobody is subscribed** and alarms only change state in the console. Set it before
 relying on any alarm ([README, Deploy step 2](../README.md#deploy)) and confirm the subscription
-email. Check `aws sns list-subscriptions-by-topic --topic-arn <alarm_topic_arn>` if you are unsure.
+email. In prod `alarm_email` is a required, validated variable: `make tf-plan ENV=prod` refuses to
+run until it is set in `prod.tfvars` or `TF_VAR_alarm_email`. Check `aws sns list-subscriptions-by-topic --topic-arn <alarm_topic_arn>` if you are unsure.
 Every alarm sends both ALARM and OK transitions to the topic, so recovery is notified too.
 
 Useful Terraform outputs (`terraform -chdir=infra/terraform/envs/<env> output`): `api_url`,
@@ -69,15 +74,15 @@ Prerequisites:
 - `make tf-init` once per clone (`terraform init -backend-config=backend.hcl`).
 - On a clean checkout, `make lint test` should be green.
 
-Procedure (`ENV` defaults to `dev`; `make tf-plan` runs `make build` first, so step 1 is only
-needed if you want to inspect the zip):
+Procedure (`ENV` defaults to `dev`; use `ENV=prod` on every target below for production;
+`make tf-plan` runs `make build` first, so step 1 is only needed if you want to inspect the zip):
 
 ```bash
 make build                 # scripts/build_lambda.sh -> build/lambda.zip (arm64 wheels, fails if pydantic_core arm64 .so is missing)
 make tf-plan ENV=dev       # builds the zip, then terraform plan -var-file=dev.tfvars -out=tfplan
 ```
 
-Review the plan. The saved plan file is `infra/terraform/envs/dev/tfplan`. Expect:
+Review the plan. The saved plan file is `infra/terraform/envs/<env>/tfplan`. Expect:
 
 - A code change: `aws_lambda_function.this` updated in place (`source_code_hash`), a new
   published version, and `aws_lambda_alias.live` moved to it.
@@ -85,7 +90,14 @@ Review the plan. The saved plan file is `infra/terraform/envs/dev/tfplan`. Expec
   (`create_before_destroy`) and the stage repointed. The previous deployment is destroyed, see
   section 3.
 - Anything that says `destroy` on the DynamoDB table, the log groups or the SNS topic is wrong;
-  stop and ask.
+  stop and ask. In prod the table has deletion protection, so such a plan would also fail to
+  apply.
+- The first prod plan additionally creates the WAF web ACL, its association and log group
+  (`enable_waf` is on in prod), and sets reserved concurrency 50 on the function.
+- Shared account with dev: both roots manage the account-level `aws_api_gateway_account`
+  setting, so a prod plan may show it changing to prod's CloudWatch role and the next dev plan
+  changing it back. Harmless; do not "fix" it by setting `manage_account_cloudwatch_role = false`
+  (that unsets the role and stops access logging for both stages).
 
 ```bash
 make tf-apply ENV=dev      # terraform apply tfplan  (CHANGES AWS)
@@ -865,14 +877,13 @@ aws ce list-cost-allocation-tags --tag-keys Project --type UserDefined
 - [ ] Anything else under the tag (`aws resourcegroupstaggingapi get-resources --tag-filters
   Key=Project,Values=projects-api --query 'ResourceTagMappingList[].ResourceARN'`) that is not in
   the table in section 1: restored DynamoDB tables from section 7, forgotten test resources.
-- [ ] Budget state: `aws budgets describe-budget --account-id <id> --budget-name projects-api-dev-monthly`
-  and whether `monthly_budget_usd` (default 20, set in `infra/terraform/envs/dev/dev.tfvars`)
+- [ ] Budget state: `aws budgets describe-budget --account-id <id> --budget-name projects-api-<env>-monthly`
+  and whether `monthly_budget_usd` (20 in `envs/dev/dev.tfvars`, 100 in `envs/prod/prod.tfvars`)
   still reflects expected spend. Raise it deliberately rather than muting notifications.
 - [ ] Log volume: `IncomingBytes` per log group over the month. If Lambda logs dominate, check
-  `LOG_LEVEL` (default `INFO`) and `POWERTOOLS_LOGGER_SAMPLE_RATE` (`1` outside prod, `0.05` in
-  prod). Retention is `log_retention_days` (default 14) in both `lambda_api` and
-  `api_gateway_rest` modules; it is not exposed at the environment root, so changing it is a
-  module edit.
+  `LOG_LEVEL` (default `INFO`) and `POWERTOOLS_LOGGER_SAMPLE_RATE` (root variable
+  `logger_sample_rate`: `1` in dev, `0.05` in prod). Retention is the root variable
+  `log_retention_days` (14 in dev, 30 in prod), applied to the Lambda, access and WAF log groups.
 - [ ] Traffic sanity: total `Count` versus keys in use (`get-api-keys --name-query
   projects-api-dev-`); disable keys that no longer have an owner (section 4).
 - [ ] Unused published Lambda versions: they cost nothing while total stored code is small, but
@@ -892,8 +903,9 @@ aws ce list-cost-allocation-tags --tag-keys Project --type UserDefined
 - WAF is optional and off by default (`enable_waf`, [#23](https://github.com/jameslevine/projects-api/issues/23),
   closed); without it the gateway's own throttling and key check are the only protection
   against scanning.
-- No production environment; `dev` has deletion protection off and no alarm email by default:
-  [#28](https://github.com/jameslevine/projects-api/issues/28).
+- Production (`infra/terraform/envs/prod`, [#28](https://github.com/jameslevine/projects-api/issues/28)) is
+  validated in CI but has never been applied; its first plan, and the shared
+  `aws_api_gateway_account` setting when it shares an account with dev (section 2), are untested.
 - `DELETE /v1/projects/{projectId}` removes a project and its reservation, but only for the
   owning key. Projects of a disabled key, or duplicates after a PITR restore, still have to be
   cleaned up in DynamoDB directly (section 7).

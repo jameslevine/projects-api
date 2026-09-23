@@ -234,8 +234,11 @@ automatically.
 
 ## Deploy
 
-Everything is Terraform under `infra/terraform/`; the `dev` environment is in
-`infra/terraform/envs/dev`. Make targets default to `ENV=dev`.
+Everything is Terraform under `infra/terraform/`. Each environment is a thin root under
+`infra/terraform/envs/<env>` (`dev` and `prod`) that calls the shared
+[`modules/stack`](infra/terraform/modules/stack/main.tf) module once; the roots differ only in
+their variable defaults, `<env>.tfvars` and state key. Make targets default to `ENV=dev`; pass
+`ENV=prod` to act on production (values in [Environments](#environments) below).
 
 1. One-off: create the remote state bucket and lock table (local state, run once per account).
 
@@ -247,12 +250,17 @@ Everything is Terraform under `infra/terraform/`; the `dev` environment is in
 
    ```bash
    cp -f infra/terraform/envs/dev/backend.example.hcl infra/terraform/envs/dev/backend.hcl
-   # edit backend.hcl: set bucket to the STATE_BUCKET name above
+   cp -f infra/terraform/envs/prod/backend.example.hcl infra/terraform/envs/prod/backend.hcl  # when deploying prod
+   # edit each backend.hcl: set bucket to the STATE_BUCKET name above (the state key already differs per env)
    ```
 
    Set `alarm_email` in `infra/terraform/envs/dev/dev.tfvars` if anyone relies on this
    environment: it is the only subscriber of the alarm SNS topic, so **without it no alarm or
    budget notification reaches a human**. Confirm the subscription email AWS sends after apply.
+   In `infra/terraform/envs/prod/prod.tfvars` it is **required**: `make tf-plan ENV=prod` stops
+   with `No value for required variable` until it is set (or exported as `TF_VAR_alarm_email`),
+   and a value without an `@` fails validation with
+   `alarm_email is required in prod; nobody is paged without it.`
 
 3. Initialise, plan and apply. `tf-plan` builds the zip first and saves the plan to `tfplan`;
    `tf-apply` applies exactly that saved plan.
@@ -262,6 +270,10 @@ Everything is Terraform under `infra/terraform/`; the `dev` environment is in
    make tf-plan
    make tf-apply
    ```
+
+   Production is the same three targets with `ENV=prod` (`make tf-init ENV=prod`, and so on);
+   the plan is saved to `infra/terraform/envs/prod/tfplan`. `make smoke ENV=prod`,
+   `scripts/create_api_key.sh <label> prod` and `make rollback ENV=prod` address it the same way.
 
 4. Read the outputs. The stage ships with one demo API key so it is usable immediately.
 
@@ -299,8 +311,33 @@ Everything is Terraform under `infra/terraform/`; the `dev` environment is in
      --cost-allocation-tags-status TagKey=Project,Status=Active
    ```
 
-`make tf-fmt tf-validate` checks formatting and validates both `bootstrap` and `envs/dev` without
-credentials (CI runs the same). Do not run `terraform apply` or mutating `aws` commands unless you
+### Environments
+
+Both roots call the same stack module, so anything not in this table is identical. Values are
+the defaults in each root's `variables.tf`, restated in `<env>.tfvars`.
+
+| | `dev` (`infra/terraform/envs/dev`) | `prod` (`infra/terraform/envs/prod`) |
+|---|---|---|
+| State key | `projects-api/dev/terraform.tfstate` | `projects-api/prod/terraform.tfstate` |
+| Resource names | `projects-api-dev`, `projects-api-dev-*` | `projects-api-prod`, `projects-api-prod-*` |
+| DynamoDB deletion protection | off | on (validation refuses `false`) |
+| Lambda reserved concurrency | unreserved (`-1`) | 50 (validation refuses `-1`) |
+| Stage throttle | 50 req/s, burst 100 | 20 req/s, burst 40 |
+| Per-key throttle, monthly quota | 10 req/s, burst 20, 10,000 | 5 req/s, burst 10, 50,000 |
+| WAF (`enable_waf`) | off | on |
+| `alarm_email` | optional, unset by default | required, validated |
+| Monthly budget | USD 20 | USD 100 |
+| Log retention (Lambda, access, WAF) | 14 days | 30 days |
+| `POWERTOOLS_LOGGER_SAMPLE_RATE` | `1` | `0.05` |
+
+`manage_account_cloudwatch_role` is `true` in both. The API Gateway CloudWatch Logs role is one
+setting per AWS account and region, so if dev and prod share an account both roots register their
+own role and every plan reports drift on `aws_api_gateway_account` (harmless: either role works).
+Do not set it to `false` to silence that; the module then unsets the account role and access
+logging stops for both stages.
+
+`make tf-fmt tf-validate` checks formatting and validates `bootstrap`, `envs/dev` and `envs/prod`
+without credentials (CI runs the same). Do not run `terraform apply` or mutating `aws` commands unless you
 mean to spend money.
 
 ## Onboarding a user

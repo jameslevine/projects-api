@@ -78,8 +78,9 @@ flowchart LR
     ddb -.-> alarms
 ```
 
-Terraform wiring for the diagram is in [`infra/terraform/envs/dev/main.tf`](../infra/terraform/envs/dev/main.tf),
-which composes four modules: [`dynamodb_table`](../infra/terraform/modules/dynamodb_table/main.tf),
+Terraform wiring for the diagram is in [`infra/terraform/modules/stack/main.tf`](../infra/terraform/modules/stack/main.tf),
+called once by each environment root under `infra/terraform/envs/<env>` (see
+[Environments](#environments)); it composes four modules: [`dynamodb_table`](../infra/terraform/modules/dynamodb_table/main.tf),
 [`lambda_api`](../infra/terraform/modules/lambda_api/main.tf),
 [`api_gateway_rest`](../infra/terraform/modules/api_gateway_rest/main.tf) and
 [`observability`](../infra/terraform/modules/observability/main.tf). Remote state (S3 bucket
@@ -155,7 +156,7 @@ for tests in [`tests/conftest.py`](../tests/conftest.py) and for local runs in
 | Keys | `PK` (hash, string), `SK` (range, string) |
 | GSI1 | `GSI1PK` (hash), `GSI1SK` (range), projection `ALL` |
 | Billing | `PAY_PER_REQUEST` (on-demand) |
-| Durability | Point-in-time recovery enabled; deletion protection `true` only when `environment == "prod"` |
+| Durability | Point-in-time recovery enabled; deletion protection off in `dev`, on in `prod` (stack variable `deletion_protection`) |
 | Encryption | Server-side encryption with the AWS-owned key |
 | Streams | Off by default (`stream_enabled` variable, reserved for the S4 provisioning pipeline) |
 
@@ -287,7 +288,8 @@ Implemented:
   `AWSManagedRulesCommonRuleSet`, `AWSManagedRulesKnownBadInputsRuleSet` and a per-IP rate limit
   (`waf_rate_limit`, default 2000 per five minutes), logging to `aws-waf-logs-projects-api-<env>`
   with `x-api-key` redacted ([`modules/waf/main.tf`](../infra/terraform/modules/waf/main.tf),
-  [`envs/dev/main.tf`](../infra/terraform/envs/dev/main.tf)). Off by default for cost.
+  [`modules/stack/main.tf`](../infra/terraform/modules/stack/main.tf)). Off in `dev` for cost,
+  on in `prod`.
 - Terraform security scanning in CI: `tflint` (terraform + aws rulesets) and `checkov` run in the
   `terraform-scan` job; accepted findings are listed with a reason each in
   [`.checkov.yaml`](../.checkov.yaml) ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml),
@@ -310,9 +312,9 @@ Implemented:
   ([`repositories/projects.py`](../src/projects_api/repositories/projects.py)).
 - boto3 client configured with adaptive retry mode and up to five attempts
   ([`repositories/projects.py`](../src/projects_api/repositories/projects.py)).
-- Point-in-time recovery on the table; deletion protection when `environment == "prod"`
-  ([`modules/dynamodb_table/main.tf`](../infra/terraform/modules/dynamodb_table/main.tf),
-  [`envs/dev/main.tf`](../infra/terraform/envs/dev/main.tf)).
+- Point-in-time recovery on the table; deletion protection on in `prod` (the prod root refuses
+  `false`) ([`modules/dynamodb_table/main.tf`](../infra/terraform/modules/dynamodb_table/main.tf),
+  [`envs/prod/variables.tf`](../infra/terraform/envs/prod/variables.tf)).
 - Versioned Lambda (`publish = true`) behind a stable `live` alias, so rollback is repointing
   the alias to the previous version
   ([`modules/lambda_api/main.tf`](../infra/terraform/modules/lambda_api/main.tf)).
@@ -335,8 +337,6 @@ Gaps:
 
 - The smoke test ([`tests/smoke/smoke.sh`](../tests/smoke/smoke.sh)) has not been run against a
   deployed stage: [S1-108](tickets/S1-108-smoke-deployed-stage.md).
-- No production environment yet (stricter throttles, reserved concurrency, deletion protection
-  on): [S4-404](tickets/S4-404-prod-environment.md).
 - Single region (eu-west-2); no multi-region or backup-restore drill.
 
 ### Performance efficiency
@@ -382,12 +382,12 @@ Implemented:
   [`modules/lambda_api/main.tf`](../infra/terraform/modules/lambda_api/main.tf)).
 - arm64 Lambda is priced lower per GB-second than x86
   ([`modules/lambda_api/main.tf`](../infra/terraform/modules/lambda_api/main.tf)).
-- A monthly AWS Budget (default 20 USD) filtered on the `Project=projects-api` tag, notifying at
+- A monthly AWS Budget (20 USD in `dev`, 100 USD in `prod`) filtered on the `Project=projects-api` tag, notifying at
   80% forecast and 100% actual via SNS and optional email
   ([`modules/observability/main.tf`](../infra/terraform/modules/observability/main.tf)).
 - Consistent cost-allocation tags through `default_tags` on the provider plus module `tags`
   ([`envs/dev/versions.tf`](../infra/terraform/envs/dev/versions.tf),
-  [`envs/dev/main.tf`](../infra/terraform/envs/dev/main.tf)).
+  [`modules/stack/main.tf`](../infra/terraform/modules/stack/main.tf)).
 - Bounded traffic and therefore bounded spend: usage-plan quota and throttles, stage throttles,
   optional `reserved_concurrency`
   ([`modules/api_gateway_rest/variables.tf`](../infra/terraform/modules/api_gateway_rest/variables.tf)).
@@ -404,8 +404,6 @@ Gaps:
 
 - REST API is more expensive per request than HTTP API; accepted for API keys and usage plans,
   see [ADR 0001](adr/0001-rest-api-for-api-keys.md).
-- Production budget and log sampling rate are set with the prod environment:
-  [S4-404](tickets/S4-404-prod-environment.md).
 - boto3 and botocore are bundled in the zip for version pinning, which enlarges the package;
   the build script documents how to drop them ([`scripts/build_lambda.sh`](../scripts/build_lambda.sh),
   [ADR 0004](adr/0004-fastapi-mangum-on-lambda.md)).
@@ -451,7 +449,7 @@ Gaps:
 
 - Smoke against a real stage: [S1-108](tickets/S1-108-smoke-deployed-stage.md).
 - `alarm_email` is unset in the committed `dev.tfvars`, so nobody is paged until an operator
-  sets it; prod makes it required ([S4-404](tickets/S4-404-prod-environment.md)).
+  sets it; the `prod` root makes it a required, validated variable.
 
 ### Sustainability
 
@@ -477,9 +475,35 @@ Gaps:
 
 - Deletion is explicit (`DELETE /v1/projects/{projectId}`); there is no expiry for projects
   that are never provisioned, so abandoned names stay reserved until their owner deletes them.
-- Production sizing (and whether prod needs different memory or concurrency) is
-  [S4-404](tickets/S4-404-prod-environment.md).
+- Production sizing is a first guess (512 MB, reserved concurrency 50, stage 20 req/s) until
+  the stage has carried real traffic.
 - No measurement of utilisation on a live stage yet: [S1-108](tickets/S1-108-smoke-deployed-stage.md).
+
+## Environments
+
+Two environments exist, `dev` and `prod`, each a thin Terraform root under
+[`infra/terraform/envs/<env>`](../infra/terraform/envs/) with its own S3 state key
+(`projects-api/<env>/terraform.tfstate`), `variables.tf` (that environment's defaults),
+`<env>.tfvars` and a `main.tf` that calls [`modules/stack`](../infra/terraform/modules/stack/main.tf)
+once. The stack module owns all wiring (table, API function, REST API, observability, optional
+WAF) and exposes every per-environment knob as a typed variable, so the roots cannot drift in
+shape, only in values. Resource names are `projects-api-<env>` throughout.
+
+| | `dev` | `prod` |
+|---|---|---|
+| DynamoDB deletion protection | off | on (validated) |
+| Lambda reserved concurrency | unreserved | 50 (validated, `-1` refused) |
+| Stage throttle | 50 req/s, burst 100 | 20 req/s, burst 40 |
+| Per-key throttle, monthly quota | 10 req/s, burst 20, 10,000 | 5 req/s, burst 10, 50,000 |
+| WAF | off (`enable_waf`) | on |
+| `alarm_email` | optional | required (`^[^@]+@[^@]+$`) |
+| Monthly budget | USD 20 | USD 100 |
+| Log retention | 14 days | 30 days |
+| `POWERTOOLS_LOGGER_SAMPLE_RATE` | `1` | `0.05` |
+
+CI validates `bootstrap`, `envs/dev` and `envs/prod` on every push. The account-level API Gateway
+CloudWatch role (`aws_api_gateway_account`) is a per-account, per-region singleton that both roots
+register when they share an account; see the README's Environments notes.
 
 ## Local development and deployment (summary)
 
@@ -494,8 +518,9 @@ The [README](../README.md) owns the step-by-step detail; this is the shape.
   exports the locked runtime dependencies with `uv`, installs arm64 wheels, adds
   `src/projects_api` and writes `build/lambda.zip`.
 - **Deploy.** Once: `make tf-bootstrap STATE_BUCKET=<name>`, then copy
-  `infra/terraform/envs/dev/backend.example.hcl` to `backend.hcl`. Per change:
-  `make tf-init tf-plan tf-apply` (plan depends on `build`). Outputs include `api_url`,
+  `infra/terraform/envs/<env>/backend.example.hcl` to `backend.hcl` in that root. Per change:
+  `make tf-init tf-plan tf-apply` (plan depends on `build`; `ENV=prod` for production, which
+  refuses to plan until `alarm_email` is set). Outputs include `api_url`,
   `usage_plan_id` and the sensitive `demo_api_key_value`.
 - **Verify.** `make smoke` runs five checks against the deployed stage (health 200, no key 403,
   create 201, duplicate 409, invalid name 400). Onboard further users with
@@ -506,5 +531,5 @@ The [README](../README.md) owns the step-by-step detail; this is the shape.
 - [ADR 0001: REST API for API keys and usage plans](adr/0001-rest-api-for-api-keys.md)
 - [ADR 0004: FastAPI with Mangum on a single Lambda](adr/0004-fastapi-mangum-on-lambda.md)
 - [ADR 0005: Per-type provisioning design (agent, mcp, web), Proposed](adr/0005-per-type-provisioning.md)
-- ADR 0002 (single-table design) and ADR 0003 (global name uniqueness) are written under
-  [S1-107](tickets/S1-107-readme-adr-0002-0003.md).
+- [ADR 0002: DynamoDB single-table design with generic PK/SK](adr/0002-single-table-design.md)
+- [ADR 0003: Global, case-insensitive name uniqueness via a reservation item](adr/0003-global-name-uniqueness.md)

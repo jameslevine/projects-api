@@ -1,11 +1,17 @@
 .DEFAULT_GOAL := help
 ENV ?= dev
 TF_DIR := infra/terraform/envs/$(ENV)
+TF_ROOTS := infra/terraform/bootstrap $(wildcard infra/terraform/envs/*)
+# One provider download shared by every root (Terraform requires the directory to exist).
+TF_PLUGIN_CACHE_DIR ?= $(HOME)/.terraform.d/plugin-cache
+export TF_PLUGIN_CACHE_DIR
 
 .PHONY: help install lint format sh-lint test cov run-local local-db build tf-fmt tf-validate tf-lint tf-scan tf-init tf-plan tf-apply tf-bootstrap smoke rollback clean
 
 help: ## Show targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+	@echo
+	@echo "  tf-init, tf-plan, tf-apply, smoke and rollback act on ENV (default dev): make tf-plan ENV=prod"
 
 install: ## Create venv and install all dependencies
 	uv sync
@@ -43,9 +49,12 @@ build: ## Build build/lambda.zip (python3.12, arm64)
 tf-fmt: ## terraform fmt check
 	terraform fmt -check -recursive infra/terraform
 
-tf-validate: ## terraform validate (no backend, no credentials)
-	cd infra/terraform/bootstrap && terraform init -backend=false -input=false >/dev/null && terraform validate
-	cd $(TF_DIR) && terraform init -backend=false -input=false >/dev/null && terraform validate
+tf-validate: ## terraform validate bootstrap and every envs/* root (no backend, no credentials)
+	@mkdir -p "$(TF_PLUGIN_CACHE_DIR)"
+	@for d in $(TF_ROOTS); do \
+		echo "== $$d"; \
+		(cd $$d && terraform init -backend=false -input=false >/dev/null && terraform validate) || exit 1; \
+	done
 
 tf-lint: ## tflint over infra/terraform (tflint on PATH; same config as CI)
 	cd infra/terraform && tflint --init --config .tflint.hcl && tflint --recursive --config "$$(pwd)/.tflint.hcl"
@@ -59,7 +68,7 @@ tf-bootstrap: ## One-off: create state bucket and lock table (STATE_BUCKET requi
 tf-init: ## terraform init with S3 backend (copy backend.example.hcl to backend.hcl first)
 	cd $(TF_DIR) && terraform init -input=false -backend-config=backend.hcl
 
-tf-plan: build ## terraform plan for ENV
+tf-plan: build ## terraform plan for ENV (ENV=prod needs alarm_email in prod.tfvars)
 	cd $(TF_DIR) && terraform plan -input=false -var-file=$(ENV).tfvars -out=tfplan
 
 tf-apply: ## terraform apply the saved plan for ENV

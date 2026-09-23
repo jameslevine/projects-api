@@ -40,6 +40,11 @@ variable "log_level" {
   default = "INFO"
 }
 
+variable "logger_sample_rate" {
+  description = "POWERTOOLS_LOGGER_SAMPLE_RATE: fraction of invocations whose logs are emitted at DEBUG, as a string between \"0\" and \"1\". The stack module derives the per-environment default."
+  type        = string
+}
+
 variable "log_retention_days" {
   type    = number
   default = 14
