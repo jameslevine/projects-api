@@ -12,6 +12,10 @@ resource "aws_api_gateway_rest_api" "this" {
   # own 10 MB request limit; body validation is done by FastAPI/Pydantic.
   minimum_compression_size = -1
   tags                     = var.tags
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # GET /health : public liveness probe, no API key.
@@ -22,11 +26,12 @@ resource "aws_api_gateway_resource" "health" {
 }
 
 resource "aws_api_gateway_method" "health_get" {
-  rest_api_id      = aws_api_gateway_rest_api.this.id
-  resource_id      = aws_api_gateway_resource.health.id
-  http_method      = "GET"
-  authorization    = "NONE"
-  api_key_required = false
+  rest_api_id          = aws_api_gateway_rest_api.this.id
+  resource_id          = aws_api_gateway_resource.health.id
+  http_method          = "GET"
+  authorization        = "NONE"
+  api_key_required     = false
+  request_validator_id = aws_api_gateway_request_validator.params.id
 }
 
 resource "aws_api_gateway_integration" "health_get" {

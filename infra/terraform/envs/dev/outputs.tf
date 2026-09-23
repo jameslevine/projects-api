@@ -28,3 +28,8 @@ output "lambda_function_name" {
 output "dashboard_name" {
   value = module.observability.dashboard_name
 }
+
+output "waf_web_acl_arn" {
+  description = "Web ACL attached to the stage, or null when enable_waf is false."
+  value       = one(module.waf[*].web_acl_arn)
+}

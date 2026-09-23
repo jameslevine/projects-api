@@ -2,7 +2,7 @@
 ENV ?= dev
 TF_DIR := infra/terraform/envs/$(ENV)
 
-.PHONY: help install lint format test cov run-local local-db build tf-fmt tf-validate tf-init tf-plan tf-apply tf-bootstrap smoke rollback clean
+.PHONY: help install lint format test cov run-local local-db build tf-fmt tf-validate tf-lint tf-scan tf-init tf-plan tf-apply tf-bootstrap smoke rollback clean
 
 help: ## Show targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -43,6 +43,12 @@ tf-fmt: ## terraform fmt check
 tf-validate: ## terraform validate (no backend, no credentials)
 	cd infra/terraform/bootstrap && terraform init -backend=false -input=false >/dev/null && terraform validate
 	cd $(TF_DIR) && terraform init -backend=false -input=false >/dev/null && terraform validate
+
+tf-lint: ## tflint over infra/terraform (tflint on PATH; same config as CI)
+	cd infra/terraform && tflint --init --config .tflint.hcl && tflint --recursive --config "$$(pwd)/.tflint.hcl"
+
+tf-scan: ## checkov security scan of infra/terraform (accepted findings in .checkov.yaml)
+	uvx --python 3.12 --from 'checkov==3.3.19' checkov --config-file .checkov.yaml
 
 tf-bootstrap: ## One-off: create state bucket and lock table (STATE_BUCKET required)
 	cd infra/terraform/bootstrap && terraform init -input=false && terraform apply -var="state_bucket_name=$(STATE_BUCKET)"

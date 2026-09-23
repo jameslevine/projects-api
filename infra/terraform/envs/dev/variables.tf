@@ -39,3 +39,15 @@ variable "manage_account_cloudwatch_role" {
   type    = bool
   default = true
 }
+
+variable "enable_waf" {
+  description = "Attach a WAF web ACL (managed rules + per-IP rate limit) to the stage. Off by default: about USD 5 per ACL, USD 1 per rule and USD 0.60 per million requests each month."
+  type        = bool
+  default     = false
+}
+
+variable "waf_rate_limit" {
+  description = "Requests per source IP per five minutes before WAF blocks it (when enable_waf)."
+  type        = number
+  default     = 2000
+}

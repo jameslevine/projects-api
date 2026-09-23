@@ -10,6 +10,11 @@ output "stage_name" {
   value = aws_api_gateway_stage.this.stage_name
 }
 
+output "stage_arn" {
+  description = "Stage ARN, the association target for a WAF web ACL."
+  value       = aws_api_gateway_stage.this.arn
+}
+
 output "invoke_url" {
   value = aws_api_gateway_stage.this.invoke_url
 }

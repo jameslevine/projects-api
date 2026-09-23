@@ -44,3 +44,39 @@ jobs:
       - name: Validate dev
         working-directory: infra/terraform/envs/dev
         run: terraform init -backend=false -input=false && terraform validate
+
+  terraform-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.64.0
+          github_token: ${{ github.token }}
+      - name: tflint init (downloads the aws ruleset; retried)
+        working-directory: infra/terraform
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          ok=0
+          for attempt in 1 2 3; do
+            if tflint --init --config .tflint.hcl; then ok=1; break; fi
+            echo "tflint --init failed (attempt $attempt), retrying"; sleep 10
+          done
+          test "$ok" = 1
+      - name: tflint
+        working-directory: infra/terraform
+        run: tflint --recursive --config "$(pwd)/.tflint.hcl"
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - name: checkov (pinned; install retried, scan config in .checkov.yaml)
+        run: |
+          ok=0
+          for attempt in 1 2 3; do
+            if uvx --python 3.12 --from 'checkov==3.3.19' checkov --version; then ok=1; break; fi
+            echo "checkov install failed (attempt $attempt), retrying"; sleep 10
+          done
+          test "$ok" = 1
+          uvx --python 3.12 --from 'checkov==3.3.19' checkov --config-file .checkov.yaml

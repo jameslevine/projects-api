@@ -49,3 +49,12 @@ module "observability" {
   api_p99_ms_threshold = var.api_p99_ms_threshold
   tags                 = local.tags
 }
+
+module "waf" {
+  count      = var.enable_waf ? 1 : 0
+  source     = "../../modules/waf"
+  name       = local.name
+  stage_arn  = module.api.stage_arn
+  rate_limit = var.waf_rate_limit
+  tags       = local.tags
+}
