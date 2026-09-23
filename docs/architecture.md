@@ -268,11 +268,18 @@ Implemented:
   responses are fixed documents ([`api/errors.py`](../src/projects_api/api/errors.py)).
 - Secrets hygiene: `.gitignore` excludes `.env`, tfvars overrides, state and zips; the demo key
   value is a `sensitive` Terraform output.
+- Optional WAF: `enable_waf = true` attaches a REGIONAL web ACL to the stage with
+  `AWSManagedRulesCommonRuleSet`, `AWSManagedRulesKnownBadInputsRuleSet` and a per-IP rate limit
+  (`waf_rate_limit`, default 2000 per five minutes), logging to `aws-waf-logs-projects-api-<env>`
+  with `x-api-key` redacted ([`modules/waf/main.tf`](../infra/terraform/modules/waf/main.tf),
+  [`envs/dev/main.tf`](../infra/terraform/envs/dev/main.tf)). Off by default for cost.
+- Terraform security scanning in CI: `tflint` (terraform + aws rulesets) and `checkov` run in the
+  `terraform-scan` job; accepted findings are listed with a reason each in
+  [`.checkov.yaml`](../.checkov.yaml) ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml),
+  [`infra/terraform/.tflint.hcl`](../infra/terraform/.tflint.hcl)).
 
 Gaps:
 
-- No WAF in front of the stage and no Terraform security scanning in CI:
-  [S3-304](tickets/S3-304-waf-and-security-scanning.md).
 - DynamoDB uses the AWS-owned key; a customer-managed KMS key is a one-line change in the module
   but is not configured.
 - The `demo` API key is created by Terraform and should be disabled once real keys exist
@@ -377,14 +384,14 @@ Implemented:
   [`modules/api_gateway_rest/variables.tf`](../infra/terraform/modules/api_gateway_rest/variables.tf)).
 - Old Terraform state versions expire after 90 days
   ([`bootstrap/main.tf`](../infra/terraform/bootstrap/main.tf)).
-- Optional cost items are opt-in: alarm email and budget can be `null`; WAF is deferred.
+- Optional cost items are opt-in: alarm email and budget can be `null`; WAF is behind
+  `enable_waf` (default `false`), which costs about USD 5 per web ACL, USD 1 per rule and
+  USD 0.60 per million requests each month, plus WAF log storage.
 
 Gaps:
 
 - REST API is more expensive per request than HTTP API; accepted for API keys and usage plans,
   see [ADR 0001](adr/0001-rest-api-for-api-keys.md).
-- WAF adds a fixed monthly cost and is therefore behind a default-off flag when it arrives:
-  [S3-304](tickets/S3-304-waf-and-security-scanning.md).
 - Production budget and log sampling rate are set with the prod environment:
   [S4-404](tickets/S4-404-prod-environment.md).
 - boto3 and botocore are bundled in the zip for version pinning, which enlarges the package;

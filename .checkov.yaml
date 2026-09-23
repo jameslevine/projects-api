@@ -1,0 +1,59 @@
+# checkov configuration (CI job terraform-scan; locally `make tf-scan`).
+#
+# Every skip below is an accepted finding with a one-line reason. Anything not listed fails CI.
+# Re-run without skips to see the full picture: uvx checkov -d infra/terraform --framework terraform
+
+directory:
+  - infra/terraform
+framework:
+  - terraform
+download-external-modules: false
+quiet: true
+compact: true
+
+skip-check:
+  # --- API Gateway -----------------------------------------------------------------------
+  # GET /health is a deliberately public liveness probe; every other method requires an API key.
+  - CKV_AWS_59
+  # Responses are per-key and dynamic; stage/method caching would add cost and staleness.
+  - CKV_AWS_120
+  - CKV_AWS_225
+  # Client certificates authenticate API Gateway to HTTP backends; the backend is a Lambda proxy.
+  - CKV2_AWS_51
+  # WAF is opt-in (envs/dev enable_waf, default false for cost); when enabled the association exists.
+  - CKV2_AWS_29
+
+  # --- Logs ------------------------------------------------------------------------------
+  # Log groups hold no request/response bodies or key values; KMS on logs is not worth the cost here.
+  - CKV_AWS_158
+  # 14-day retention is a deliberate cost decision for a small API (architecture.md, cost pillar).
+  - CKV_AWS_338
+
+  # --- DynamoDB --------------------------------------------------------------------------
+  # AWS-owned key encryption at rest; a customer-managed CMK is a documented gap (architecture.md).
+  - CKV_AWS_119
+  # Only the bootstrap lock table lacks PITR; it holds transient lock records, nothing to restore.
+  - CKV_AWS_28
+
+  # --- Lambda ----------------------------------------------------------------------------
+  # No VPC resources are accessed; DynamoDB is reached over IAM-authenticated public endpoints.
+  - CKV_AWS_117
+  # Invocations are synchronous through API Gateway; a dead-letter queue applies only to async invokes.
+  - CKV_AWS_116
+  # Environment variables hold a table name and feature flags, no secrets; default encryption suffices.
+  - CKV_AWS_173
+  # Code signing is out of scope; the zip is built and uploaded by the CI pipeline itself.
+  - CKV_AWS_272
+
+  # --- SNS -------------------------------------------------------------------------------
+  # CloudWatch alarms and Budgets cannot publish to a topic encrypted with the AWS-managed key, so
+  # this needs a customer-managed CMK plus key policy; the topic carries alarm state only.
+  - CKV_AWS_26
+
+  # --- Terraform state bucket (bootstrap) -------------------------------------------------
+  # Single-operator, single-region state bucket: SSE-S3, versioning and public-access block are on;
+  # access logging, replication, KMS and event notifications are not justified for it.
+  - CKV_AWS_18
+  - CKV_AWS_144
+  - CKV_AWS_145
+  - CKV2_AWS_62

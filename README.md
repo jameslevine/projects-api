@@ -337,6 +337,14 @@ To roll the `live` Lambda alias back to an earlier published version run `make r
 (`ENV=prod ARGS="--version N --yes"`; add `--dry-run` to only print the command; see
 `scripts/rollback.sh --help`). The next `terraform apply` moves the alias forward again.
 
+Security: set `enable_waf = true` in `infra/terraform/envs/dev/dev.tfvars` to put an AWS WAF web
+ACL in front of the stage (AWS managed Common and Known Bad Inputs rule groups plus a per-IP rate
+limit, `waf_rate_limit`, default 2000 requests per five minutes). It is off by default because it
+costs about USD 5 per web ACL, USD 1 per rule and USD 0.60 per million requests a month. WAF logs
+go to `aws-waf-logs-projects-api-<env>` with the `x-api-key` header redacted. CI lints the
+Terraform with `tflint` and scans it with `checkov` (`make tf-lint`, `make tf-scan`); accepted
+findings are listed with a reason each in [`.checkov.yaml`](.checkov.yaml).
+
 ## Project layout
 
 ```text
