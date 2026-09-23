@@ -6,11 +6,13 @@
 
 from typing import Any
 
+from aws_lambda_powertools.logging import correlation_paths
 from fastapi import FastAPI
 from mangum import Mangum
 from mangum.adapter import DEFAULT_TEXT_MIME_TYPES
 
 from projects_api import __version__
+from projects_api.api.context import RequestContextMiddleware
 from projects_api.api.errors import register_error_handlers
 from projects_api.api.openapi import API_DESCRIPTION, build_openapi
 from projects_api.api.routes import health, projects
@@ -29,6 +31,7 @@ def create_app() -> FastAPI:
         redoc_url=None,
     )
     register_error_handlers(app)
+    app.add_middleware(RequestContextMiddleware)
     app.include_router(health.router)
     app.include_router(projects.router)
 
@@ -53,7 +56,9 @@ _mangum = Mangum(
 )
 
 
-@logger.inject_lambda_context(log_event=False, clear_state=True)
+@logger.inject_lambda_context(
+    correlation_id_path=correlation_paths.API_GATEWAY_REST, log_event=False, clear_state=True
+)
 @tracer.capture_lambda_handler
 @metrics.log_metrics(capture_cold_start_metric=True)
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:

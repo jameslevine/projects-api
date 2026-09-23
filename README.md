@@ -326,6 +326,13 @@ DynamoDB capacity and errors), eight alarms (Lambda errors, throttles and p99 du
 Lambda logs are in `/aws/lambda/projects-api-<env>` and gateway access logs in
 `/aws/apigateway/projects-api-<env>/access`, both 14-day retention.
 
+Every response carries an `X-Request-Id` header (the API Gateway request id in AWS, so it also
+appears in the gateway access log; a UUID locally) and problem bodies repeat it as `requestId`.
+Each request produces one `request completed` log line (`route`, `method`, `status`, `owner_id`,
+`duration_ms`, `request_id`; never bodies, query strings or headers) and every log line carries the
+id as `correlation_id`. To follow a request in CloudWatch Logs Insights:
+`fields @timestamp, message, route, status | filter correlation_id = "<X-Request-Id>"`.
+
 ## Project layout
 
 ```text
@@ -335,6 +342,7 @@ src/projects_api/
   observability.py      Powertools logger/tracer/metrics singletons
   api/deps.py           current_user (apiKeyId), repository dependency
   api/errors.py         RFC 7807 problem+json handlers; map domain errors here
+  api/context.py        request id resolution + per-request log line middleware
   api/openapi.py        OpenAPI post-processing (Problem schema, security scheme, examples)
   api/routes/*.py       one router per resource, prefix /v1
   domain/validation.py  the ONLY place validation rules live

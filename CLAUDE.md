@@ -32,6 +32,7 @@ src/projects_api/
   observability.py      Powertools logger/tracer/metrics singletons
   api/deps.py           current_user (apiKeyId), repository dependency
   api/errors.py         RFC 7807 problem+json handlers; map domain errors here
+  api/context.py        request id resolution + per-request log line middleware
   api/openapi.py        OpenAPI post-processing (Problem schema, security scheme, examples)
   api/routes/*.py       one router per resource, prefix /v1
   domain/validation.py  the ONLY place validation rules live

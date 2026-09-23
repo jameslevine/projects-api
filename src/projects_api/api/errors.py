@@ -4,6 +4,9 @@ All non-2xx responses share one shape so clients can handle them uniformly:
 
     {"type": "...", "title": "...", "status": 409, "detail": "...", "instance": "/v1/projects",
      "requestId": "..."}
+
+`requestId` is always present and equals the `X-Request-Id` response header; see
+`api/context.py` for how it is resolved.
 """
 
 from typing import Any
@@ -14,6 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from projects_api.api.context import REQUEST_ID_HEADER, request_id
 from projects_api.domain.exceptions import (
     InvalidCursorError,
     ProjectNameTakenError,
@@ -82,20 +86,13 @@ class Problem(BaseModel):
     request_id: str | None = Field(
         default=None,
         alias="requestId",
-        description="API Gateway request id, present when running in AWS and echoed in the "
-        "`X-Request-Id` header. Quote it when reporting an error.",
+        description="Correlation id of the request (the API Gateway request id in AWS), also "
+        "sent as the `X-Request-Id` header. Quote it when reporting an error.",
     )
     errors: list[ProblemFieldError] | None = Field(
         default=None,
         description="Only on 400 validation problems: one entry per failing field.",
     )
-
-
-def request_id(request: Request) -> str | None:
-    ctx = request.scope.get("aws.context")
-    if ctx is not None:
-        return str(getattr(ctx, "aws_request_id", None) or "")
-    return request.headers.get("x-request-id")
 
 
 def problem(
@@ -115,13 +112,14 @@ def problem(
         "instance": request.url.path,
     }
     rid = request_id(request)
-    if rid:
-        body["requestId"] = rid
+    body["requestId"] = rid
     if extra:
         body.update(extra)
-    headers = {"X-Request-Id": rid} if rid else None
     return JSONResponse(
-        body, status_code=status_code, media_type=PROBLEM_CONTENT_TYPE, headers=headers
+        body,
+        status_code=status_code,
+        media_type=PROBLEM_CONTENT_TYPE,
+        headers={REQUEST_ID_HEADER: rid},
     )
 
 
