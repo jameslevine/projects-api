@@ -316,8 +316,8 @@ against a real stage is tracked in [#16](https://github.com/jameslevine/projects
 
 ## Operations
 
-The on-call runbook is planned as [docs/runbook.md](docs/runbook.md)
-([#22](https://github.com/jameslevine/projects-api/issues/22)). Until then: the
+The on-call runbook is [docs/runbook.md](docs/runbook.md) (deploy, rollback, API key
+lifecycle, request tracing, alarm playbooks, PITR restore, cost review). In summary: the
 `observability` Terraform module creates a CloudWatch dashboard named `projects-api-<env>`
 (API count/4XX/5XX, latency p50/p99, Lambda invocations/errors/throttles, business metrics,
 DynamoDB capacity and errors), eight alarms (Lambda errors, throttles and p99 duration; API 5XX,
