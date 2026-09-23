@@ -76,9 +76,7 @@ resource "aws_lambda_function" "this" {
       POWERTOOLS_METRICS_NAMESPACE       = "ProjectsApi"
       POWERTOOLS_LOGGER_LOG_EVENT        = "false"
       POWERTOOLS_LOGGER_SAMPLE_RATE      = var.environment == "prod" ? "0.05" : "1"
-      AWS_LAMBDA_EXEC_WRAPPER            = ""
       PYTHONDONTWRITEBYTECODE            = "1"
-      TRACING_DISABLED                   = "false"
       POWERTOOLS_TRACER_CAPTURE_ERROR    = "true"
       POWERTOOLS_TRACER_CAPTURE_RESPONSE = "false"
     }

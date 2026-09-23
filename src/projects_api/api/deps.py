@@ -34,12 +34,13 @@ def current_user(request: Request, settings: Annotated[Settings, Depends(get_set
 
 
 @lru_cache(maxsize=1)
-def _repository(settings: Settings) -> ProjectRepository:
-    return ProjectRepository(settings)
+def _repository() -> ProjectRepository:
+    """One repository (and one boto3 client) per Lambda execution environment."""
+    return ProjectRepository(get_settings())
 
 
-def get_repository(settings: Annotated[Settings, Depends(get_settings)]) -> ProjectRepository:
-    return _repository(settings)
+def get_repository() -> ProjectRepository:
+    return _repository()
 
 
 CurrentUser = Annotated[str, Depends(current_user)]
