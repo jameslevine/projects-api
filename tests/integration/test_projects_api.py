@@ -326,7 +326,10 @@ def _apigw_event(
     api_key_id: str | None,
     *,
     query: dict[str, str] | None = None,
+    request_id: str | None = "apigw-req-1",
 ) -> dict[str, Any]:
+    """Synthetic API Gateway REST event. `request_id` is deliberately different from
+    `_Ctx.aws_request_id` so tests can tell the gateway id from the Lambda id."""
     return {
         "resource": "/{proxy+}",
         "path": path,
@@ -346,7 +349,7 @@ def _apigw_event(
             "httpMethod": method,
             "path": f"/live{path}",
             "stage": "live",
-            "requestId": "req-123",
+            "requestId": request_id,
             "identity": {"apiKeyId": api_key_id, "sourceIp": "127.0.0.1"},
         },
         "body": json.dumps(body) if body is not None else None,
@@ -376,8 +379,8 @@ def test_lambda_handler_conflict_carries_request_id(client: TestClient) -> None:
     )
     assert resp["statusCode"] == 409
     body = json.loads(resp["body"])
-    assert body["requestId"] == "req-123"
-    assert resp["headers"]["x-request-id"] == "req-123"
+    assert body["requestId"] == "apigw-req-1"  # the gateway id, not _Ctx.aws_request_id
+    assert resp["headers"]["x-request-id"] == "apigw-req-1"
 
 
 def test_lambda_handler_get_project_returns_200_for_owner(client: TestClient) -> None:

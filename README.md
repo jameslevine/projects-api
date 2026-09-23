@@ -326,6 +326,13 @@ and 4XX ratio; DynamoDB system errors and throttles) fanning out to the SNS topi
 Lambda logs are in `/aws/lambda/projects-api-<env>` and gateway access logs in
 `/aws/apigateway/projects-api-<env>/access`, both 14-day retention.
 
+Every response carries an `X-Request-Id` header (the API Gateway request id in AWS, so it also
+appears in the gateway access log; a UUID locally) and problem bodies repeat it as `requestId`.
+Each request produces one `request completed` log line (`route`, `method`, `status`, `owner_id`,
+`duration_ms`, `request_id`; never bodies, query strings or headers) and every log line carries the
+id as `correlation_id`. To follow a request in CloudWatch Logs Insights:
+`fields @timestamp, message, route, status | filter correlation_id = "<X-Request-Id>"`.
+
 ## Project layout
 
 ```text
