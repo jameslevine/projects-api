@@ -13,7 +13,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from projects_api.domain.exceptions import ProjectNameTakenError, ProjectNotFoundError
+from projects_api.domain.exceptions import (
+    InvalidCursorError,
+    ProjectNameTakenError,
+    ProjectNotFoundError,
+)
 from projects_api.observability import logger
 
 PROBLEM_CONTENT_TYPE = "application/problem+json"
@@ -71,6 +75,16 @@ def register_error_handlers(app: FastAPI) -> None:
             detail="One or more fields failed validation.",
             problem_type="validation",
             extra={"errors": errors},
+        )
+
+    @app.exception_handler(InvalidCursorError)
+    async def _invalid_cursor(request: Request, exc: InvalidCursorError) -> JSONResponse:
+        return problem(
+            request,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            title="Invalid request",
+            detail=str(exc),
+            problem_type="invalid-cursor",
         )
 
     @app.exception_handler(ProjectNameTakenError)

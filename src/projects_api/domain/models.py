@@ -84,3 +84,17 @@ class Project(BaseModel):
 
 class ProjectResponse(Project):
     """Public representation. Same shape as Project, serialised with camelCase keys."""
+
+
+class ProjectListResponse(BaseModel):
+    """One page of the caller's projects, newest first."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    items: list[ProjectResponse]
+    next_token: str | None = Field(
+        default=None,
+        alias="nextToken",
+        description="Opaque cursor for the next page. Pass it back as `nextToken`; null on "
+        "the last page.",
+    )

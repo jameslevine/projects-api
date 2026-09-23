@@ -1,10 +1,14 @@
-from fastapi import APIRouter, Response, status
+from typing import Annotated
+
+from fastapi import APIRouter, Query, Response, status
 
 from projects_api.api.deps import CurrentUser, Repository
+from projects_api.api.pagination import decode_cursor, encode_cursor
 from projects_api.domain.exceptions import ProjectNotFoundError
 from projects_api.domain.models import (
     CreateProjectRequest,
     Project,
+    ProjectListResponse,
     ProjectResponse,
     is_valid_project_id,
 )
@@ -37,6 +41,52 @@ def create_project(
     logger.info("project created", project_id=project.project_id, type=project.type.value)
     response.headers["Location"] = f"/v1/projects/{project.project_id}"
     return project
+
+
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 100
+
+
+@router.get(
+    "",
+    response_model=ProjectListResponse,
+    response_model_by_alias=True,
+    summary="List the caller's projects",
+    responses={
+        400: {"description": "`limit` out of range or `nextToken` invalid (problem+json)."},
+    },
+)
+def list_projects(
+    owner_id: CurrentUser,
+    repo: Repository,
+    limit: Annotated[
+        int,
+        Query(
+            ge=1,
+            le=MAX_PAGE_SIZE,
+            description=f"Page size, 1 to {MAX_PAGE_SIZE}. Defaults to {DEFAULT_PAGE_SIZE}.",
+        ),
+    ] = DEFAULT_PAGE_SIZE,
+    next_token: Annotated[
+        str | None,
+        Query(
+            alias="nextToken",
+            description="Opaque cursor from the previous page's `nextToken`.",
+        ),
+    ] = None,
+) -> ProjectListResponse:
+    """List the caller's projects, newest first, one page at a time.
+
+    Only the caller's own projects are ever returned. A `nextToken` minted for another
+    caller is rejected as invalid.
+    """
+    cursor = decode_cursor(next_token, owner_id) if next_token is not None else None
+    projects, last_key = repo.list_by_owner(owner_id, limit=limit, cursor=cursor)
+    logger.debug("projects listed", count=len(projects), has_more=last_key is not None)
+    return ProjectListResponse(
+        items=[ProjectResponse.model_validate(p, from_attributes=True) for p in projects],
+        next_token=encode_cursor(last_key) if last_key is not None else None,
+    )
 
 
 @router.get(

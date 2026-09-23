@@ -175,7 +175,7 @@ Base URL: `http://localhost:8080` locally, or the `api_url` Terraform output (wh
 | `GET` | `/health` | public | none | `200` `{"status": "ok", "version": "<semver>"}` |
 | `POST` | `/v1/projects` | API key | `{"name": string, "type": "agent" \| "mcp" \| "web"}`; no other properties | `201` project record + `Location`; `400` validation (`errors[]`); `401` no identity (local only); `403` missing or invalid key (gateway); `409` name taken; `429` throttled (gateway) |
 | `GET` | `/v1/projects/{projectId}` | API key | none | `200` project record for the owner; `404` when the id is malformed, unknown or belongs to another key; `401` no identity (local only); `403` missing or invalid key (gateway); `429` throttled (gateway) |
-| `GET` | `/v1/projects` | API key | none | planned (S2), [#18](https://github.com/jameslevine/projects-api/issues/18): `200` list of the caller's projects with cursor pagination |
+| `GET` | `/v1/projects?limit=&nextToken=` | API key | none | `200` `{"items": [project record, ...], "nextToken": string \| null}`, newest first; `400` `limit` outside 1..100 or invalid `nextToken`; `401` no identity (local only); `403` missing or invalid key (gateway); `429` throttled (gateway) |
 | `DELETE` | `/v1/projects/{projectId}` | API key | none | planned (S4), [#25](https://github.com/jameslevine/projects-api/issues/25): `204`, `404` for missing or another owner's project |
 
 Project record fields: `projectId` (`prj_` + 32 hex), `name`, `type`, `status` (`CREATED`,
@@ -183,6 +183,10 @@ Project record fields: `projectId` (`prj_` + 32 hex), `name`, `type`, `status` (
 `updatedAt` (ISO 8601 UTC, second precision).
 
 Resources owned by another key return `404`, never `403`, so project ids cannot be enumerated.
+
+Pagination: `limit` defaults to 20 (1 to 100). `nextToken` is an opaque, URL-safe cursor scoped to
+the calling key; pass it back unchanged to fetch the next page, and stop when it is `null`. A token
+may lead to an empty final page. Tokens from another key, or edited ones, return `400`.
 
 ### Validation rules
 
